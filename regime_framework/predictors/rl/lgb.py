@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from .base import RLBasePredictor
 from .env import (
@@ -29,7 +30,14 @@ from .env import (
 
 
 class _FQILearner:
-    """Per-action LightGBM regressor of Q(s, a). Lazily-imported lightgbm."""
+    """Per-action LightGBM regressor of Q(s, a). Lazily-imported lightgbm.
+
+    LightGBM 4.x's sklearn wrapper records feature_names_in_ on fit even with
+    numpy input, so passing numpy at predict trips sklearn's "X does not have
+    valid feature names" warning. Workaround: always wrap inputs in a DataFrame
+    with stable column names (f0..fN-1) at both fit and predict — sklearn sees
+    matching names at both ends and stays quiet.
+    """
     def __init__(
         self,
         n_actions: int,
@@ -48,27 +56,36 @@ class _FQILearner:
             verbosity=-1,
         )
         self._models: list[Any] = [None] * self.n_actions
+        self._cols: list[str] | None = None  # set on first fit
 
     def is_fitted(self) -> bool:
         return all(m is not None for m in self._models)
 
+    def _as_df(self, arr: np.ndarray) -> pd.DataFrame:
+        """Wrap a numpy array in a DataFrame with our stable column names."""
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if self._cols is None:
+            self._cols = [f"f{i}" for i in range(arr.shape[1])]
+        return pd.DataFrame(arr, columns=self._cols)
+
     def q_values(self, state: np.ndarray) -> np.ndarray:
         """Predict Q(state, a) for all actions. Returns 0 if not yet fitted."""
         out = np.zeros(self.n_actions, dtype=np.float64)
-        if state.ndim == 1:
-            state = state.reshape(1, -1)
+        df = self._as_df(state)
         for a in range(self.n_actions):
             if self._models[a] is not None:
-                out[a] = float(self._models[a].predict(state)[0])
+                out[a] = float(self._models[a].predict(df)[0])
         return out
 
     def q_values_batch(self, states: np.ndarray) -> np.ndarray:
         """Batch version: returns (n_samples, n_actions) array."""
         n = len(states)
         out = np.zeros((n, self.n_actions), dtype=np.float64)
+        df = self._as_df(states)
         for a in range(self.n_actions):
             if self._models[a] is not None:
-                out[:, a] = self._models[a].predict(states)
+                out[:, a] = self._models[a].predict(df)
         return out
 
     def fit_iteration(
@@ -108,17 +125,10 @@ class _FQILearner:
                 mask = actions == a
                 if mask.sum() < 5:
                     continue  # too few samples for this action
-                X_a = states[mask]
+                X_a = self._as_df(states[mask])
                 y_a = targets[mask]
                 model = LGBMRegressor(**self._params)
                 model.fit(X_a, y_a)
-                # LightGBM 4.x's sklearn wrapper records feature_names_in_ even
-                # when fit gets numpy. We always pass numpy at predict, so this
-                # mismatch triggers sklearn's "X does not have valid feature
-                # names" warning on every predict. Drop the attribute so the
-                # estimator behaves like a numpy-only model.
-                if hasattr(model, "feature_names_in_"):
-                    delattr(model, "feature_names_in_")
                 self._models[a] = model
 
             if progress_label is not None and (

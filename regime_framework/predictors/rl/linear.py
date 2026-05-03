@@ -32,17 +32,39 @@ from .env import (
 class _LinearQLearner:
     """Tabular-style Q-learning with linear features. ~5x faster than DQN
     on small feature sets, virtually no overfit risk on 4380 train bars.
+
+    Raw features arrive on wildly different scales (technical indicators,
+    z-scores, prices). Without standardization, td_error * features explodes
+    after a few hundred updates → matmul overflow → degenerate policy. We
+    standardize per-feature using train-set mean/std stored once at fit
+    time, applied to every q_values / update / predict call afterwards.
     """
     def __init__(self, n_features: int, n_actions: int, lr: float = 1e-3, gamma: float = 0.99):
-        # weights[a] is the (n_features,) vector for action a
-        self.W = np.zeros((n_actions, n_features), dtype=np.float64)
+        # weights[a] is the (n_features+1,) vector — the +1 is a bias term
+        self.W = np.zeros((n_actions, n_features + 1), dtype=np.float64)
         self.lr = float(lr)
         self.gamma = float(gamma)
         self.epsilon = 1.0
         self.n_actions = int(n_actions)
+        # Standardization stats — set via set_normalization() before training
+        self._mu: np.ndarray | None = None
+        self._sigma: np.ndarray | None = None
+
+    def set_normalization(self, mu: np.ndarray, sigma: np.ndarray) -> None:
+        """Set per-feature mean/std for standardization. sigma is floored to
+        1e-8 to avoid division by zero on constant features."""
+        self._mu = mu.astype(np.float64)
+        self._sigma = np.maximum(sigma.astype(np.float64), 1e-8)
+
+    def _phi(self, state: np.ndarray) -> np.ndarray:
+        """Standardize state and append a 1.0 bias term."""
+        s = state.astype(np.float64)
+        if self._mu is not None and self._sigma is not None:
+            s = (s - self._mu) / self._sigma
+        return np.concatenate([s, [1.0]])
 
     def q_values(self, state: np.ndarray) -> np.ndarray:
-        return self.W @ state.astype(np.float64)  # (n_actions,)
+        return self.W @ self._phi(state)  # (n_actions,)
 
     def select_action(self, state: np.ndarray, deterministic: bool = False) -> int:
         if deterministic or np.random.rand() > self.epsilon:
@@ -50,11 +72,14 @@ class _LinearQLearner:
         return int(np.random.randint(self.n_actions))
 
     def update(self, s: np.ndarray, a: int, r: float, s_next: np.ndarray, done: bool) -> None:
-        q_current = float(self.q_values(s)[a])
-        q_next = 0.0 if done else float(np.max(self.q_values(s_next)))
+        phi_s = self._phi(s)
+        q_current = float(self.W[a] @ phi_s)
+        q_next = 0.0 if done else float(np.max(self.W @ self._phi(s_next)))
         target = r + self.gamma * q_next
         td_error = target - q_current
-        self.W[a] += self.lr * td_error * s.astype(np.float64)
+        # Clip td_error so a single outlier reward can't blow up W
+        td_error = float(np.clip(td_error, -1.0, 1.0))
+        self.W[a] += self.lr * td_error * phi_s
 
 
 class _LinearRLBase(RLBasePredictor):
@@ -113,6 +138,11 @@ class _LinearRLBase(RLBasePredictor):
                 n_features=n_features, n_actions=n_actions,
                 lr=self.learning_rate, gamma=self.gamma,
             )
+            # Pool features across all envs to fit standardization stats once.
+            # Cold start only — FT keeps the previously fit stats so the
+            # warm-started weights stay aligned with the same feature scale.
+            pooled = np.concatenate([f for (f, _) in envs_data], axis=0)
+            self._learner.set_normalization(pooled.mean(axis=0), pooled.std(axis=0))
 
         envs = [self._build_env(f, c) for (f, c) in envs_data]
         steps_per_env = max(1, total_timesteps // len(envs))
