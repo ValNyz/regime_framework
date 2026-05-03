@@ -99,6 +99,9 @@ class BenchmarkRunner:
         self.X: pd.DataFrame | None = None
         self.y: pd.Series | None = None
         self.dates: pd.Series | None = None
+        # Mapping {feature_name: source_group} populated after the feature
+        # pipeline runs. Used to annotate feature-importance tables.
+        self.feature_sources: dict[str, str] = {}
         # Cache of extra-coin (X, y, dates) keyed by coin.target. Populated on
         # first call to _stack_with_target so CV folds don't re-run the entire
         # feature pipeline for ETH/SOL/etc on every fold.
@@ -155,6 +158,7 @@ class BenchmarkRunner:
         X, y, dates = pipeline.build(df, labels)
         self.X, self.y, self.dates = X, y, dates
         self.feature_count = X.shape[1]
+        self.feature_sources = dict(getattr(pipeline, "column_sources", {}))
         console.print(f"  Final dataset: {len(X)} rows × {X.shape[1]} cols")
 
         # ----- 5. Split: single or cross-validation -----
@@ -796,6 +800,9 @@ class BenchmarkRunner:
         if cfg.training.add_coin_id_feature:
             ohe = pd.get_dummies(X_combined["coin_id"], prefix="coin").astype(float)
             X_combined = pd.concat([X_combined.drop(columns="coin_id"), ohe], axis=1)
+            # Tag the new one-hot columns as coin_id sources
+            for c in ohe.columns:
+                self.feature_sources[c] = "coin_id"
         else:
             X_combined = X_combined.drop(columns="coin_id")
 
@@ -896,11 +903,18 @@ class BenchmarkRunner:
             console.print(f"[dim]feature_importances unavailable for {predictor.name}.[/dim]")
             return
 
-        # Save full ranking
+        # Resolve source group for each feature (technical / external / signals
+        # / coin_id / unknown).
+        def _src(name: str) -> str:
+            return self.feature_sources.get(name, "unknown")
+
+        # Save full ranking with source column
         sfx = f"_{suffix}" if suffix else ""
         out_csv = RESULTS_DIR / f"feature_importance_{predictor.name}{sfx}.csv"
         imp_df = imp.reset_index().rename(columns={"index": "feature"})
         imp_df.columns = ["feature", "importance"]
+        imp_df["source"] = imp_df["feature"].map(_src)
+        imp_df = imp_df[["feature", "source", "importance"]]
         imp_df.to_csv(out_csv, index=False)
 
         top = imp.head(20)
@@ -909,13 +923,30 @@ class BenchmarkRunner:
         table = Table(title=f"Top 20 features — {predictor.name}{title_sfx}")
         table.add_column("rank", justify="right", style="dim")
         table.add_column("feature")
+        table.add_column("source", style="cyan")
         table.add_column("importance", justify="right")
         table.add_column("bar")
         for rank, (feat, val) in enumerate(top.items(), 1):
             bar_len = int(round(20 * float(val) / max_imp)) if max_imp > 0 else 0
             bar = "█" * max(bar_len, 0)
-            table.add_row(str(rank), str(feat), f"{val:.4f}", bar)
+            table.add_row(str(rank), str(feat), _src(str(feat)), f"{val:.4f}", bar)
         console.print(table)
+
+        # Per-source aggregation (sum of importance) — top-of-table summary
+        if len(imp_df) > 0:
+            agg = (
+                imp_df.groupby("source")["importance"].sum()
+                .sort_values(ascending=False)
+            )
+            total = float(agg.sum()) or 1.0
+            agg_table = Table(title=f"Importance by source — {predictor.name}{title_sfx}")
+            agg_table.add_column("source", style="cyan")
+            agg_table.add_column("sum", justify="right")
+            agg_table.add_column("share", justify="right")
+            for src, val in agg.items():
+                agg_table.add_row(str(src), f"{float(val):.4f}", f"{100*float(val)/total:5.1f}%")
+            console.print(agg_table)
+
         console.print(f"[dim]Full ranking → {out_csv}[/dim]")
 
     def _save_summary_csv(self) -> None:

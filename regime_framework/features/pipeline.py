@@ -31,16 +31,23 @@ class FeaturePipeline:
     def build(self, df: pd.DataFrame, labels: pd.Series) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
         """Build the combined feature matrix.
 
+        Side effect: populates `self.column_sources`, a dict mapping every
+        feature name to its origin group ("technical", "external", "signals").
+        Consumed by the runner to annotate feature-importance reports.
+
         Returns:
             X: feature DataFrame (rows aligned, NaN dropped if configured)
             y: label Series aligned to X.index
             dates: pd.Series of dates aligned to X.index (for plotting / split)
         """
         feats: list[pd.DataFrame] = []
+        self.column_sources: dict[str, str] = {}
 
         if self.use_technical:
             tech = compute_technical_features(df)
             feats.append(tech)
+            for c in tech.columns:
+                self.column_sources[c] = "technical"
             print(f"  technical: {tech.shape[1]} features")
 
         if self.use_external:
@@ -52,6 +59,8 @@ class FeaturePipeline:
                 cross_name=self.cross_name,
             )
             feats.append(ext)
+            for c in ext.columns:
+                self.column_sources[c] = "external"
             print(f"  external:  {ext.shape[1]} features")
 
         if self.use_trading_signals:
@@ -73,6 +82,8 @@ class FeaturePipeline:
                     print(f"  WARN: failed to load funding for trading signals: {e}")
             ts = compute_trading_signal_features(df, self.trading_signals_yaml, funding=funding_series)
             feats.append(ts)
+            for c in ts.columns:
+                self.column_sources[c] = "signals"
             print(f"  signals:   {ts.shape[1]} usable features")
 
         if not feats:

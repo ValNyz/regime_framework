@@ -217,11 +217,12 @@ class XGBoostPredictor(BasePredictor):
 
     def fit(self, X_train, y_train, dates_train, df_train):
         y_int = np.array([self.cls_to_idx[v] for v in y_train.values], dtype=np.int64)
-        self.clf.fit(X_train.values, y_int)
+        # Pass DataFrame directly so XGBoost preserves feature names end-to-end.
+        self.clf.fit(X_train, y_int)
         return self
 
     def predict(self, X_test, dates_test, df_test):
-        pred_int = self.clf.predict(X_test.values)
+        pred_int = self.clf.predict(X_test)
         return np.array([self.idx_to_cls[int(i)] for i in pred_int], dtype=object)
 
     def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
@@ -262,11 +263,13 @@ class LightGBMPredictor(BasePredictor):
 
     def fit(self, X_train, y_train, dates_train, df_train):
         y_int = np.array([self.cls_to_idx[v] for v in y_train.values], dtype=np.int64)
-        self.clf.fit(X_train.values, y_int)
+        # Pass DataFrame directly so LightGBM preserves feature names end-to-end
+        # (avoids sklearn warning about feature-name mismatch on predict).
+        self.clf.fit(X_train, y_int)
         return self
 
     def predict(self, X_test, dates_test, df_test):
-        pred_int = self.clf.predict(X_test.values)
+        pred_int = self.clf.predict(X_test)
         return np.array([self.idx_to_cls[int(i)] for i in pred_int], dtype=object)
 
     def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
