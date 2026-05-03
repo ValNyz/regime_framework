@@ -20,29 +20,39 @@ def synth_equity_curve(
 ) -> tuple[np.ndarray, float]:
     """Compute the long-bull / short-bear / flat-else synth-equity curve.
 
-    Strategy: at each bar, take a long position if the label is "bull",
-    short if "bear", flat otherwise (range / volatile / unlabeled). Hourly
-    compounded log returns, no costs/slippage. The curve is normalized to
-    start at closes[0] so it overlays cleanly with the actual price series.
+    Strategy semantics (no look-ahead):
+      - At end of bar t, observe close[t] and the model's label[t].
+      - Take position sign(label[t]) (+1 long bull, -1 short bear, 0 else).
+      - Hold until end of bar t+1 → earn sign(label[t]) * log(close[t+1]/close[t]).
+      - That contribution is the strategy log return at step (t → t+1).
+
+    Hourly compounded log returns, no costs/slippage. The curve is normalized
+    to start at closes[0] so it overlays cleanly with the actual price.
 
     Returns:
         equity: cumulative equity matching len(closes), starting at closes[0]
         total_gain: final fractional return (e.g. 0.125 = +12.5%)
 
-    Used by both the metric path (evaluation.metrics.evaluate) and the plot
-    path (visualization.regime_plots._plot_B and friends) — single source of
-    truth for the synth-strategy semantics.
+    Single source of truth: used by both evaluate() (the synth_gain metric)
+    and regime_plots._plot_B / plot_synth_equity_multi / plot_stitched_oos.
     """
     closes = np.asarray(closes, dtype=np.float64)
     labels_arr = np.asarray(labels)
-    if len(closes) == 0:
-        return np.zeros(0), float("nan")
-    log_ret = np.zeros(len(closes))
-    log_ret[1:] = np.log(closes[1:] / closes[:-1])
+    if len(closes) < 2:
+        zero_eq = np.full(len(closes), float(closes[0]) if len(closes) else 0.0)
+        return zero_eq, 0.0
+    # Per-step relative log return (length n-1):
+    #   log_ret_rel[t] = log(close[t+1] / close[t])  for t in [0, n-2]
+    log_ret_rel = np.log(closes[1:] / closes[:-1])
     sign = np.zeros(len(labels_arr), dtype=np.float64)
     sign[labels_arr == "bull"] = +1.0
     sign[labels_arr == "bear"] = -1.0
-    cum_log = np.cumsum(sign * log_ret)
+    # Strategy log return at step (t → t+1):
+    #   strategy_log_ret[t] = sign(label[t]) * log_ret_rel[t]
+    # Position is decided AFTER observing close[t], applied to the next bar.
+    strategy_log_ret = sign[:-1] * log_ret_rel
+    cum_log = np.zeros(len(closes))
+    cum_log[1:] = np.cumsum(strategy_log_ret)
     equity = np.exp(cum_log) * float(closes[0])
     total_gain = float(np.exp(cum_log[-1]) - 1.0)
     return equity, total_gain
@@ -76,24 +86,22 @@ def synth_gain_by_month(
 ) -> dict[str, float]:
     """Per-calendar-month synth_gain. Returns {YYYY-MM: fractional_return}.
 
-    Computes the long-bull / short-bear / flat-else strategy log returns
-    bar-by-bar then buckets by calendar month. The first bar of each month
-    inherits the carry-over bar's log return correctly because we shift
-    inside the strategy: at bar t, the trade is taken at t and earns
-    log(close[t] / close[t-1]).
+    Same no-look-ahead semantics as synth_equity_curve: at bar t, the model
+    label triggers a position held from t to t+1. The realized log return
+    log(close[t+1]/close[t]) is bucketed by date[t] (the position date).
     """
     closes = np.asarray(closes, dtype=np.float64)
     labels_arr = np.asarray(labels)
     if len(closes) < 2:
         return {}
-    log_ret = np.zeros(len(closes))
-    log_ret[1:] = np.log(closes[1:] / closes[:-1])
+    log_ret_rel = np.log(closes[1:] / closes[:-1])  # length n-1
     sign = np.zeros(len(labels_arr), dtype=np.float64)
     sign[labels_arr == "bull"] = +1.0
     sign[labels_arr == "bear"] = -1.0
+    strategy_log_ret = sign[:-1] * log_ret_rel  # length n-1
 
-    months = pd.to_datetime(dates).to_period("M").astype(str)
-    df = pd.DataFrame({"month": months, "s": sign * log_ret})
+    months = pd.to_datetime(dates[:-1]).to_period("M").astype(str)
+    df = pd.DataFrame({"month": months, "s": strategy_log_ret})
     monthly_log = df.groupby("month")["s"].sum()
     return {str(m): float(np.exp(v) - 1.0) for m, v in monthly_log.items()}
 
