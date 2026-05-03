@@ -40,13 +40,19 @@ def run(
     skip_pretrained: bool = typer.Option(
         False, "--skip-pretrained", help="Skip all foundation models (faster).",
     ),
-    walk_forward: int = typer.Option(
-        0, "--walk-forward", "-wf",
-        help="Number of expanding-window folds. 0 = single train/test split (default).",
+    cv_folds: int = typer.Option(
+        0, "--cv-folds", "-k",
+        help="Number of cross-validation folds. 0 = single train/test split (default).",
+    ),
+    cv_mode: str = typer.Option(
+        "walk_forward", "--cv-mode",
+        help="CV mode: walk_forward (expanding window, live-style), "
+             "leave_one_out (each fold tested with rest as train, future-info), "
+             "or both (run both and compare).",
     ),
     min_train_fraction: float = typer.Option(
         0.40, "--min-train-fraction",
-        help="Walk-forward: fraction of total data used as train in fold 0.",
+        help="Walk-forward only: fold-0 train size (fraction of total).",
     ),
 ):
     """Run the full benchmark on a preset config."""
@@ -56,8 +62,13 @@ def run(
         cfg.predictors.families.remove("pretrained")
     if pretrained:
         cfg.predictors.pretrained_models = list(pretrained)
-    if walk_forward > 0:
-        cfg.split.walk_forward_folds = walk_forward
+    if cv_folds > 0:
+        if cv_mode not in ("walk_forward", "leave_one_out", "both"):
+            raise typer.BadParameter(
+                f"--cv-mode must be one of: walk_forward, leave_one_out, both (got {cv_mode!r})"
+            )
+        cfg.split.cv_folds = cv_folds
+        cfg.split.cv_mode = cv_mode
         cfg.split.min_train_fraction = float(min_train_fraction)
 
     from .evaluation.runner import BenchmarkRunner

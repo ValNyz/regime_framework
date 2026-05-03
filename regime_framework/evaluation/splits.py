@@ -31,6 +31,46 @@ def time_aware_split(
     return X_tr, y_tr, d_tr, X_te, y_te, d_te
 
 
+def leave_one_out_splits(
+    n: int,
+    n_folds: int = 5,
+    purge_bars: int = 0,
+) -> Iterator[tuple[np.ndarray, np.ndarray, int]]:
+    """K chronologically equal-sized folds; each fold becomes test once.
+
+    Train = all other folds, with `purge_bars` removed on BOTH sides of the
+    test window to avoid forward-window label leakage from train into test.
+
+    Yields:
+      (train_idx, test_idx, fold_id) — train_idx is non-contiguous when k != 0
+      and k != n_folds-1 (it's the union of past + future folds minus the
+      purge gap around test).
+
+    NOTE: this mode INTENTIONALLY uses future data in train. It answers
+    "is the predictor robust ON each calendar period?" rather than "what
+    would I have observed live at that time?". Use walk_forward_splits()
+    for the latter.
+    """
+    if n_folds <= 1 or n <= n_folds:
+        return
+    fold_size = n // n_folds
+    for k in range(n_folds):
+        test_start = k * fold_size
+        test_end = (k + 1) * fold_size if k < n_folds - 1 else n
+        if test_end - test_start < 10:
+            continue
+
+        # Train: everything outside the test window, minus a purge gap on BOTH sides
+        train_left = np.arange(0, max(test_start - purge_bars, 0))
+        train_right = np.arange(min(test_end + purge_bars, n), n)
+        train_idx = np.concatenate([train_left, train_right])
+        test_idx = np.arange(test_start, test_end)
+
+        if len(train_idx) < 100:
+            continue
+        yield train_idx, test_idx, k
+
+
 def walk_forward_splits(
     n: int,
     n_folds: int = 5,

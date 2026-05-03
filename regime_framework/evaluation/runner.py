@@ -31,7 +31,7 @@ from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
 from ..visualization.regime_plots import save_label_plots, save_prediction_plots
 from .metrics import evaluate
-from .splits import time_aware_split, walk_forward_splits
+from .splits import time_aware_split, walk_forward_splits, leave_one_out_splits
 
 
 console = Console()
@@ -133,10 +133,15 @@ class BenchmarkRunner:
         self.feature_count = X.shape[1]
         console.print(f"  Final dataset: {len(X)} rows × {X.shape[1]} cols")
 
-        # ----- 5. Split: single or walk-forward -----
+        # ----- 5. Split: single or cross-validation -----
         purge = cfg.purge_bars
-        if cfg.split.walk_forward_folds and cfg.split.walk_forward_folds > 0:
-            return self._run_walk_forward(cfg, df, X, y, dates, purge)
+        # Backward-compat: walk_forward_folds → cv_folds with mode walk_forward
+        if cfg.split.walk_forward_folds and not cfg.split.cv_folds:
+            cfg.split.cv_folds = cfg.split.walk_forward_folds
+            cfg.split.cv_mode = "walk_forward"
+
+        if cfg.split.cv_folds and cfg.split.cv_folds > 0:
+            return self._run_cv(cfg, df, X, y, dates, purge)
         else:
             return self._run_single_split(cfg, df, labels, X, y, dates, purge)
 
@@ -238,23 +243,43 @@ class BenchmarkRunner:
                     traceback.print_exc()
         return results, per_predictor_predictions
 
-    def _run_walk_forward(self, cfg, df, X, y, dates, purge: int) -> dict:
-        n_folds = int(cfg.split.walk_forward_folds)
-        console.print(
-            f"[bold]Walk-forward CV[/bold] — {n_folds} folds, "
-            f"min_train={cfg.split.min_train_fraction:.0%}, purge={purge} bars"
-        )
+    def _run_cv(self, cfg, df, X, y, dates, purge: int) -> dict:
+        n_folds = int(cfg.split.cv_folds)
+        modes = ["walk_forward", "leave_one_out"] if cfg.split.cv_mode == "both" else [cfg.split.cv_mode]
 
-        # Per-fold results: rows = (fold, predictor), cols = metrics
+        all_aggr: dict[str, pd.DataFrame] = {}
+        for mode in modes:
+            per_fold_df = self._run_cv_single_mode(cfg, df, X, y, dates, purge, mode, n_folds)
+            if per_fold_df is not None and not per_fold_df.empty:
+                all_aggr[mode] = per_fold_df
+
+        # If two modes ran, print a side-by-side comparison
+        if len(all_aggr) == 2:
+            self._print_cv_comparison(all_aggr)
+
+        return {"modes": list(all_aggr.keys()), "n_folds": n_folds}
+
+    def _run_cv_single_mode(self, cfg, df, X, y, dates, purge: int, mode: str, n_folds: int) -> pd.DataFrame | None:
+        if mode == "leave_one_out":
+            console.print(
+                f"\n[bold]Leave-one-out CV[/bold] — {n_folds} folds, purge={purge} bars on each side"
+            )
+            split_iter = leave_one_out_splits(n=len(X), n_folds=n_folds, purge_bars=purge)
+        else:
+            console.print(
+                f"\n[bold]Walk-forward CV[/bold] — {n_folds} folds, "
+                f"min_train={cfg.split.min_train_fraction:.0%}, purge={purge} bars"
+            )
+            split_iter = walk_forward_splits(
+                n=len(X),
+                n_folds=n_folds,
+                purge_bars=purge,
+                min_train_fraction=cfg.split.min_train_fraction,
+            )
+
         per_fold_rows: list[dict] = []
-        all_results_aggr: dict[str, list[PredictionResult]] = {}
 
-        for train_idx, test_idx, fold_id in walk_forward_splits(
-            n=len(X),
-            n_folds=n_folds,
-            purge_bars=purge,
-            min_train_fraction=cfg.split.min_train_fraction,
-        ):
+        for train_idx, test_idx, fold_id in split_iter:
             X_tr = X.iloc[train_idx]
             y_tr = y.iloc[train_idx]
             d_tr = dates.iloc[train_idx]
@@ -265,9 +290,9 @@ class BenchmarkRunner:
             df_te = df.loc[X_te.index]
 
             console.rule(
-                f"[bold cyan]Fold {fold_id+1}/{n_folds}: "
-                f"train={len(X_tr)} ({d_tr.iloc[0].date()}→{d_tr.iloc[-1].date()}) "
-                f"| test={len(X_te)} ({d_te.iloc[0].date()}→{d_te.iloc[-1].date()})"
+                f"[bold cyan]Fold {fold_id+1}/{n_folds} ({mode}): "
+                f"train={len(X_tr)} | "
+                f"test={len(X_te)} ({d_te.iloc[0].date()}→{d_te.iloc[-1].date()})"
             )
 
             baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
@@ -289,15 +314,58 @@ class BenchmarkRunner:
 
         if not per_fold_rows:
             console.print("[red]No folds produced — check min_train_fraction / data length[/red]")
-            return {"results": [], "folds": []}
+            return None
 
         per_fold_df = pd.DataFrame(per_fold_rows)
-        per_fold_df.to_csv(RESULTS_DIR / "walk_forward_per_fold.csv", index=False)
-        self._print_walk_forward_summary(per_fold_df)
-        return {"folds": per_fold_rows, "n_folds_run": per_fold_df["fold"].nunique()}
+        per_fold_df["cv_mode"] = mode
+        per_fold_df.to_csv(RESULTS_DIR / f"cv_{mode}_per_fold.csv", index=False)
+        self._print_cv_summary(per_fold_df, mode)
+        return per_fold_df
 
-    def _print_walk_forward_summary(self, per_fold: pd.DataFrame) -> None:
-        # Aggregated table: mean ± std κ across folds
+    def _print_cv_comparison(self, all_aggr: dict[str, pd.DataFrame]) -> None:
+        # Build per-mode aggregated views
+        wf = all_aggr.get("walk_forward")
+        lo = all_aggr.get("leave_one_out")
+        if wf is None or lo is None:
+            return
+
+        def _agg(d: pd.DataFrame) -> pd.DataFrame:
+            return d.groupby(["predictor", "family"])["kappa"].agg(["mean", "std"]).reset_index()
+
+        wf_a = _agg(wf).rename(columns={"mean": "wf_kappa_mean", "std": "wf_kappa_std"})
+        lo_a = _agg(lo).rename(columns={"mean": "lo_kappa_mean", "std": "lo_kappa_std"})
+        merged = wf_a.merge(lo_a, on=["predictor", "family"], how="outer")
+        merged["delta"] = merged["lo_kappa_mean"] - merged["wf_kappa_mean"]
+        merged = merged.sort_values("wf_kappa_mean", ascending=False)
+        merged.to_csv(RESULTS_DIR / "cv_comparison.csv", index=False)
+
+        table = Table(title="CV mode comparison — κ_mean ± std (walk-forward vs leave-one-out)")
+        table.add_column("predictor")
+        table.add_column("family")
+        table.add_column("walk-forward κ", justify="right")
+        table.add_column("leave-one-out κ", justify="right")
+        table.add_column("Δ (loo - wf)", justify="right")
+        for _, r in merged.iterrows():
+            wfm = r.get("wf_kappa_mean", float("nan"))
+            wfs = r.get("wf_kappa_std", float("nan"))
+            lom = r.get("lo_kappa_mean", float("nan"))
+            los = r.get("lo_kappa_std", float("nan"))
+            delta = r["delta"] if pd.notna(r["delta"]) else float("nan")
+            color = "green" if pd.notna(delta) and delta > 0 else "red" if pd.notna(delta) and delta < 0 else ""
+            d_str = f"[{color}]{delta:+.3f}[/{color}]" if color else f"{delta:+.3f}"
+            table.add_row(
+                str(r["predictor"]), str(r["family"]),
+                f"{wfm:+.3f} ±{wfs:.3f}" if pd.notna(wfm) else "n/a",
+                f"{lom:+.3f} ±{los:.3f}" if pd.notna(lom) else "n/a",
+                d_str,
+            )
+        console.print(table)
+        console.print(
+            "[dim]Δ > 0 means leave-one-out is easier than walk-forward "
+            "(future-info advantage). Large Δ = predictor relies on regime stability.[/dim]"
+        )
+
+    def _print_cv_summary(self, per_fold: pd.DataFrame, mode: str) -> None:
         agg = per_fold.groupby(["predictor", "family"]).agg(
             kappa_mean=("kappa", "mean"),
             kappa_std=("kappa", "std"),
@@ -308,9 +376,11 @@ class BenchmarkRunner:
             n_folds=("fold", "count"),
         ).reset_index().sort_values("kappa_mean", ascending=False)
 
-        agg.to_csv(RESULTS_DIR / "walk_forward_aggregated.csv", index=False)
+        agg["cv_mode"] = mode
+        agg.to_csv(RESULTS_DIR / f"cv_{mode}_aggregated.csv", index=False)
 
-        table = Table(title="Walk-forward aggregate — sorted by mean κ")
+        title = f"{mode.replace('_', '-')} aggregate — sorted by mean κ"
+        table = Table(title=title)
         for col in ("predictor", "family", "kappa_mean", "kappa_std", "kappa_min", "kappa_max", "acc_mean", "f1_mean", "n_folds"):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
         for _, r in agg.iterrows():
