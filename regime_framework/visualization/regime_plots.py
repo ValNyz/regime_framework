@@ -199,78 +199,91 @@ def _plot_B(
 
 def plot_stitched_oos_equity(
     df: pd.DataFrame,
-    folds: list[dict],
+    folds_per_predictor: dict[str, list[dict]],
     out_path: Path,
     title_suffix: str,
     denoise_window: int = 168,
+    fold_test_indices: list | None = None,
 ) -> None:
-    """Stitched OOS synth equity across CV folds — best predictor per fold.
+    """Stitched OOS synth equity across CV folds — top-N predictors overlaid.
 
-    folds: list of dicts with keys
-        - test_index: pd.Index of bars in this fold's test set
-        - predictions: np.ndarray of label strings aligned with test_index
-        - predictor_name: str (for legend)
-        - kappa: float (for color intensity)
-        - test_start: str date (for boundary marker)
+    folds_per_predictor: dict mapping predictor_name → list of fold dicts.
+        Each fold dict has:
+          - test_index: pd.Index of bars in this fold's test set
+          - predictions: np.ndarray of label strings aligned with test_index
+        All predictors must share the same fold structure (same test_index
+        values across predictors), but their predictions can differ.
+
+    fold_test_indices: optional list of all fold test_index objects in order
+        (one per fold) — used to draw fold boundary lines on the plot.
+        If None, derived from the first predictor's folds.
     """
     from ..evaluation.metrics import synth_equity_curve
     closes = df["close"].values.astype(float)
     dates = pd.to_datetime(df["date"].values)
 
-    # Build a single label series spanning all folds' test windows
-    out = pd.Series("", index=df.index, dtype=object)
-    for fold in folds:
-        idx = fold["test_index"]
-        preds = fold["predictions"]
-        if len(preds) == len(idx):
-            out.loc[idx] = preds
+    if not folds_per_predictor:
+        return
 
     # Determine the OOS span — first bar of fold 0 to last bar of last fold.
-    # Plot only this span (zooming out to 2019 just dilutes the OOS detail).
-    oos_first = min((f["test_index"][0] for f in folds if len(f["test_index"])), default=None)
-    oos_last = max((f["test_index"][-1] for f in folds if len(f["test_index"])), default=None)
+    # Use the first predictor's folds; all should agree on fold structure.
+    first_preds_folds = next(iter(folds_per_predictor.values()))
+    oos_first = min((f["test_index"][0] for f in first_preds_folds if len(f["test_index"])), default=None)
+    oos_last = max((f["test_index"][-1] for f in first_preds_folds if len(f["test_index"])), default=None)
     if oos_first is not None and oos_last is not None:
         oos_slice = (df.index >= oos_first) & (df.index <= oos_last)
+        first_pos = int(np.where(oos_slice)[0][0])
     else:
         oos_slice = np.ones(len(df), dtype=bool)
-
-    # Use raw stitched predictions (no smoothing) — matches the per-fold
-    # synth_gain metric. Smoothing was a 7-day visual cleanup that diverged
-    # the equity curve from the reported numbers.
-    synth_eq, _ = synth_equity_curve(closes, out.values)
-    # Renormalize equity so the curve starts at the actual OOS-start price
-    # (otherwise the equity ramps up from $closes[0] = the 2019 price).
-    if oos_first is not None:
-        first_pos = int(np.where(oos_slice)[0][0])
-        synth_eq = synth_eq * (closes[first_pos] / synth_eq[first_pos])
+        first_pos = 0
 
     fig, ax = plt.subplots(figsize=(14, 7))
     ax.plot(dates[oos_slice], closes[oos_slice], color="black", linewidth=0.7,
             alpha=0.4, label="close (actual)")
-    ax.plot(dates[oos_slice], synth_eq[oos_slice], color="#1f77b4", linewidth=1.5,
-            label="OOS synth equity (best predictor per fold, stitched)")
 
-    # Fold boundary lines + per-fold annotation (predictor name + kappa)
-    for i, fold in enumerate(folds):
-        idx = fold["test_index"]
+    # One line per predictor — distinct colors via tab10. Legend shows each
+    # predictor's total gain over the stitched OOS span.
+    cmap = plt.get_cmap("tab10")
+    for i, (pred_name, pred_folds) in enumerate(folds_per_predictor.items()):
+        out = pd.Series("", index=df.index, dtype=object)
+        for fold in pred_folds:
+            idx = fold["test_index"]
+            preds = fold["predictions"]
+            if len(preds) == len(idx):
+                out.loc[idx] = preds
+        synth_eq, _ = synth_equity_curve(closes, out.values)
+        # Renormalize so the curve starts at the OOS-window's actual price.
+        if oos_first is not None and synth_eq[first_pos] != 0:
+            synth_eq = synth_eq * (closes[first_pos] / synth_eq[first_pos])
+        # Total gain over the stitched OOS span (last visible / first visible − 1).
+        last_visible_pos = int(np.where(oos_slice)[0][-1])
+        gain = (synth_eq[last_visible_pos] / synth_eq[first_pos]) - 1.0 if synth_eq[first_pos] else float("nan")
+        gain_str = f"{gain*100:+.1f}%" if not np.isnan(gain) else "n/a"
+        ax.plot(
+            dates[oos_slice], synth_eq[oos_slice],
+            color=cmap(i % 10), linewidth=1.5, alpha=0.9,
+            label=f"{pred_name} ({gain_str})",
+        )
+
+    # Fold boundary lines (no per-fold annotation since multiple predictors).
+    boundary_indices = fold_test_indices if fold_test_indices is not None else [
+        f["test_index"] for f in first_preds_folds
+    ]
+    for idx in boundary_indices:
         if len(idx) == 0:
             continue
         start_dt = pd.to_datetime(df.loc[idx[0], "date"])
-        ax.axvline(start_dt, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-        # Annotate at the top of the fold
-        ax.text(
-            start_dt, ax.get_ylim()[1] * 0.95 if False else closes.max(),
-            f"  {fold['predictor_name']}\n  κ={fold['kappa']:+.3f}",
-            fontsize=7, color="gray", verticalalignment="top",
-        )
+        ax.axvline(start_dt, color="gray", linestyle=":", linewidth=0.6, alpha=0.4)
 
     ax.set_yscale("log")
     ax.set_ylabel("price / equity (log)")
+    n_folds = len(boundary_indices)
+    n_preds = len(folds_per_predictor)
     ax.set_title(
-        f"(B-stitched) [{title_suffix}] OOS synth equity across {len(folds)} folds"
+        f"(B-stitched) [{title_suffix}] OOS synth equity — top {n_preds} predictors over {n_folds} folds"
     )
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="upper left", framealpha=0.9)
+    ax.legend(loc="upper left", framealpha=0.9, fontsize=9)
     plt.tight_layout()
     plt.savefig(out_path, dpi=120)
     plt.close(fig)

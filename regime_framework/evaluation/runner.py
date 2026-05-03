@@ -759,50 +759,46 @@ class BenchmarkRunner:
         # Stitched OOS plot is a once-per-CV summary, gated only by the
         # master 'enabled' flag (NOT per_fold — it survives --no-fold-plots).
         if cfg.plots.enabled and len(all_fold_preds) >= 2 and not per_fold_df.empty:
-            # Pick the global best predictor by the user's ranking criterion.
+            # Rank ALL predictors and pick the top N for overlay on the stitched plot.
             rank_by = getattr(cfg.predictors, "rank_by", "kappa")
-            if rank_by == "gain":
-                # Compound synth_gain across folds, pick the predictor with the
-                # highest compounded total (= what survives if you traded it).
-                ranking = per_fold_df.groupby("predictor")["synth_gain"].apply(
-                    lambda s: float(np.prod(1.0 + s.dropna().values) - 1.0)
-                )
-            elif rank_by == "vs_bh":
-                # Same as gain but offset by B&H total (constant across preds).
+            if rank_by in ("gain", "vs_bh"):
                 ranking = per_fold_df.groupby("predictor")["synth_gain"].apply(
                     lambda s: float(np.prod(1.0 + s.dropna().values) - 1.0)
                 )
             else:
                 ranking = per_fold_df.groupby("predictor")["kappa"].mean()
-            best_name = str(ranking.idxmax())
-            best_mean = float(ranking[best_name])
-            stitched_folds = []
-            for fp in all_fold_preds:
-                if best_name not in fp["predictions"]:
-                    continue
-                fold_kappa_row = per_fold_df[
-                    (per_fold_df["fold"] == fp["fold_id"])
-                    & (per_fold_df["predictor"] == best_name)
-                ]
-                fold_kappa = float(fold_kappa_row["kappa"].iloc[0]) if not fold_kappa_row.empty else float("nan")
-                stitched_folds.append({
-                    "fold_id": fp["fold_id"],
-                    "test_index": fp["test_index"],
-                    "predictions": fp["predictions"][best_name],
-                    "predictor_name": best_name,
-                    "kappa": fold_kappa,
-                })
+            top_n = 5
+            top_predictors = ranking.sort_values(ascending=False).head(top_n)
+            # Build folds_per_predictor: dict[predictor_name → list of fold dicts]
+            folds_per_predictor: dict[str, list[dict]] = {}
+            for pred_name in top_predictors.index:
+                pred_folds = []
+                for fp in all_fold_preds:
+                    if pred_name not in fp["predictions"]:
+                        continue
+                    pred_folds.append({
+                        "test_index": fp["test_index"],
+                        "predictions": fp["predictions"][pred_name],
+                    })
+                if pred_folds:
+                    folds_per_predictor[pred_name] = pred_folds
             try:
                 from ..visualization.regime_plots import plot_stitched_oos_equity
+                # Suffix uses the #1 predictor; n folds derived inside the plot.
+                best_name = str(top_predictors.index[0])
+                best_mean = float(top_predictors.iloc[0])
                 plot_stitched_oos_equity(
-                    df, stitched_folds,
+                    df, folds_per_predictor,
                     PLOTS_DIR / f"B_stitched_oos_{mode}.png",
-                    title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{best_name}-{rank_by}{best_mean:+.3f}",
+                    title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{rank_by}",
                 )
-                rank_str = {"kappa": "mean κ", "gain": "gain_total", "vs_bh": "vs_BH"}.get(rank_by, "mean κ")
+                rank_str = {"kappa": "mean κ", "dir_kappa": "dir-κ", "gain": "gain_total", "vs_bh": "vs_BH"}.get(rank_by, "mean κ")
+                top_summary = ", ".join(
+                    f"{n}={v:+.3f}" for n, v in top_predictors.items()
+                )
                 console.print(
                     f"[dim]Stitched OOS plot: B_stitched_oos_{mode}.png "
-                    f"(best by {rank_str}: {best_name}={best_mean:+.3f}, {len(stitched_folds)} folds)[/dim]"
+                    f"(top {len(folds_per_predictor)} by {rank_str}: {top_summary})[/dim]"
                 )
             except Exception as e:
                 console.print(f"[yellow]Stitched plot failed: {e}[/yellow]")
