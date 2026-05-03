@@ -246,14 +246,29 @@ class BenchmarkRunner:
         for col in ("signal", "n_triggers", "lift_bull", "lift_bear", "mi", "combined_score"):
             if col in top10.columns:
                 table.add_column(col)
+        def _nz_int(v) -> int:
+            try:
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    return 0
+                return int(v)
+            except (TypeError, ValueError):
+                return 0
+
+        def _nz_float(v) -> float:
+            try:
+                f = float(v)
+                return f if np.isfinite(f) else float("nan")
+            except (TypeError, ValueError):
+                return float("nan")
+
         for _, row in top10.iterrows():
             table.add_row(
                 str(row["signal"]),
-                f"{int(row.get('n_triggers', 0))}",
-                f"{row.get('lift_bull', float('nan')):.2f}",
-                f"{row.get('lift_bear', float('nan')):.2f}",
-                f"{row.get('mi', float('nan')):.4f}",
-                f"{row.get('combined_score', float('nan')):+.2f}",
+                f"{_nz_int(row.get('n_triggers'))}",
+                f"{_nz_float(row.get('lift_bull')):.2f}",
+                f"{_nz_float(row.get('lift_bear')):.2f}",
+                f"{_nz_float(row.get('mi')):.4f}",
+                f"{_nz_float(row.get('combined_score')):+.2f}",
             )
         console.print(table)
 
