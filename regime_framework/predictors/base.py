@@ -21,6 +21,42 @@ import pandas as pd
 from ..config import LABEL_ORDER
 
 
+class MultiCoinAware:
+    """Mixin marking a predictor that benefits from multi-coin training data.
+
+    The runner detects this via `is_multi_coin_aware` and, when extra coins
+    are configured, calls `set_multi_coin_data` before `fit()` with per-coin
+    (X, y, dates, df) tuples filtered to the fold's date range.
+
+    Without this mixin, a predictor only sees the (possibly stacked) X_train
+    that the runner already builds via `_stack_with_target`. RL agents and
+    pretrained fine_tuned models need separate per-coin price series instead
+    of a stacked X — that's what this mixin provides.
+
+    Subclasses use the cached data inside their `fit()`. If `set_multi_coin_data`
+    isn't called (single-coin run), `_target_coin_data` / `_extra_coin_data`
+    stay None and the predictor falls back to using just (X_train, df_train).
+    """
+    is_multi_coin_aware: bool = True
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)  # cooperative — works in MRO chains
+        self._target_coin_data: dict | None = None
+        self._extra_coin_data: dict[str, dict] | None = None
+
+    def set_multi_coin_data(
+        self,
+        target_data: dict,
+        extras_data: dict[str, dict],
+    ) -> None:
+        """target_data and each extras_data[coin] dict has keys:
+            X (DataFrame), y (Series), dates (Series), df (DataFrame with close)
+        all clipped to the same date range as the fold.
+        """
+        self._target_coin_data = target_data
+        self._extra_coin_data = dict(extras_data)
+
+
 @dataclass
 class PredictionResult:
     name: str

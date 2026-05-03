@@ -36,6 +36,8 @@ from .env import (
     ACTION_CONTINUOUS,
     VALID_ACTION_SPACES,
 )
+from .base import RLBasePredictor
+from .nn import DQN2Predictor, DQN3Predictor, SACPredictor
 
 
 __all__ = [
@@ -46,4 +48,8 @@ __all__ = [
     "ACTION_DISCRETE_3",
     "ACTION_CONTINUOUS",
     "VALID_ACTION_SPACES",
+    "RLBasePredictor",
+    "DQN2Predictor",
+    "DQN3Predictor",
+    "SACPredictor",
 ]
