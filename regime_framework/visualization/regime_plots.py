@@ -120,6 +120,30 @@ def _apply_xlim(ax, xlim_dates: tuple | None) -> bool:
     return True
 
 
+def _rebase_equity(
+    synth_eq: np.ndarray,
+    closes: np.ndarray,
+    dates: np.ndarray,
+    anchor_dt,
+) -> np.ndarray:
+    """Rescale equity so equity[anchor_pos] == closes[anchor_pos].
+
+    Without rebasing, synth_equity_curve always starts at closes[0] (the
+    earliest price in the data — could be 2019). Per-fold plots show a
+    much later window (e.g. 2024+) where the displayed price level is
+    very different from the cumulative equity level. Rebasing aligns the
+    curve with the price at the fold start so the equity reads naturally
+    against the price line.
+    """
+    if anchor_dt is None or len(synth_eq) == 0:
+        return synth_eq
+    pos = int(np.searchsorted(dates, np.datetime64(pd.to_datetime(anchor_dt))))
+    pos = max(0, min(pos, len(synth_eq) - 1))
+    if synth_eq[pos] == 0 or np.isnan(synth_eq[pos]):
+        return synth_eq
+    return synth_eq * (float(closes[pos]) / float(synth_eq[pos]))
+
+
 def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None, labels=None,
             xlim_dates: tuple | None = None) -> None:
     fig, (ax_price, ax_regime) = plt.subplots(
@@ -172,6 +196,11 @@ def _plot_B(
     dates = pd.to_datetime(df["date"].values)
     closes = df["close"].values
     synth_eq, _ = synth_equity_curve(closes, raw_labels.values)
+    # Rebase equity at the fold start (split_dt) — or at the visible window
+    # start if no split_dt — so the curve reads naturally against the price
+    # line on screen (instead of starting at the dataset's 2019 price level).
+    anchor = split_dt if split_dt is not None else (xlim_dates[0] if xlim_dates else None)
+    synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     for lab, s_dt, e_dt in runs:
@@ -244,6 +273,10 @@ def plot_stitched_oos_equity(
     # One line per predictor — distinct colors via tab10. Legend shows each
     # predictor's total gain over the stitched OOS span.
     cmap = plt.get_cmap("tab10")
+    # Anchor date: start of the OOS span — equity curves all start at the
+    # actual OOS-start price so they're directly comparable to each other
+    # and to the price line.
+    anchor_dt = dates[first_pos] if oos_first is not None else None
     for i, (pred_name, pred_folds) in enumerate(folds_per_predictor.items()):
         out = pd.Series("", index=df.index, dtype=object)
         for fold in pred_folds:
@@ -252,9 +285,7 @@ def plot_stitched_oos_equity(
             if len(preds) == len(idx):
                 out.loc[idx] = preds
         synth_eq, _ = synth_equity_curve(closes, out.values)
-        # Renormalize so the curve starts at the OOS-window's actual price.
-        if oos_first is not None and synth_eq[first_pos] != 0:
-            synth_eq = synth_eq * (closes[first_pos] / synth_eq[first_pos])
+        synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor_dt)
         # Total gain over the stitched OOS span (last visible / first visible − 1).
         last_visible_pos = int(np.where(oos_slice)[0][-1])
         gain = (synth_eq[last_visible_pos] / synth_eq[first_pos]) - 1.0 if synth_eq[first_pos] else float("nan")
@@ -315,6 +346,8 @@ def plot_synth_equity_multi(
     items = sorted(predictions_by_name.items())  # stable color assignment
     # Track the union span across all predictors for the auto-zoom.
     sample_preds = None
+    # Rebase anchor: split_dt if provided (per-fold plots), else xlim start.
+    anchor_dt = split_dt if split_dt is not None else (xlim_dates[0] if xlim_dates else None)
     for i, (name, preds) in enumerate(items):
         try:
             # Use raw predictions (no smoothing) so the equity curves match
@@ -324,6 +357,7 @@ def plot_synth_equity_multi(
             if sample_preds is None:
                 sample_preds = preds_arr
             synth_eq, _ = synth_equity_curve(closes, preds_arr)
+            synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor_dt)
             ax.plot(dates, synth_eq, color=cmap(i % 10), linewidth=1.2,
                     alpha=0.9, label=name)
         except Exception:
