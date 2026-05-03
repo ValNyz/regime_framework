@@ -94,6 +94,10 @@ class LabelConfig:
     tp_mult: float = 2.0                 # take-profit barrier in σ units
     sl_mult: float | None = None         # stop-loss; None = same as tp_mult
     vol_lookback: int = 168              # 1 week at 1h
+    # On vertical-barrier timeout (no tp/sl hit), how to resolve:
+    #   "sign" (default): label = sign(close[t+horizon] - close[t])  — canonical
+    #   "drop": leave bar unlabelled (excluded from training)
+    timeout_label: str = "sign"
     # Backward-compat alias (older configs used 'alpha' for symmetric barriers).
     alpha: float | None = None
 
