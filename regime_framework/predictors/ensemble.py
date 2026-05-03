@@ -45,10 +45,24 @@ class EnsemblePredictor(BasePredictor):
     def feed_base_probas(self, base_probas: dict[str, np.ndarray]) -> None:
         """Runner sets the current fold's base probabilities here before predict().
         Keys are base predictor names; values are (n_test, n_classes) arrays.
+
+        Deduplication by variant: the cold ensemble averages only cold bases,
+        the FT ensemble averages only FT bases. Without this, having both
+        LightGBM and LightGBM-FT in the same run would double-count each
+        underlying classifier and amplify disagreement on ambiguous bars.
+        When `include_finetune=False` there are no `-FT` names, so the cold
+        ensemble's filter degrades to "everything", which is correct.
         """
-        # Keep only base predictors that actually returned a proba matrix
+        def _is_ft(name: str) -> bool:
+            return name.endswith("-FT")
+
+        if self.finetune:
+            filtered = {k: v for k, v in base_probas.items() if _is_ft(k)}
+        else:
+            filtered = {k: v for k, v in base_probas.items() if not _is_ft(k)}
+
         self._fold_base_probas = {
-            k: v for k, v in base_probas.items()
+            k: v for k, v in filtered.items()
             if v is not None and v.ndim == 2 and v.shape[1] == len(LABEL_ORDER)
         }
 
