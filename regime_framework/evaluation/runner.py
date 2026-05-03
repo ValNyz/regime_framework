@@ -522,6 +522,21 @@ class BenchmarkRunner:
                 min_train_fraction=cfg.split.min_train_fraction,
             )
 
+        # Materialize all folds before the loop to compute the full OOS span
+        # (first fold's test_start → last fold's test_end). Per-fold plots use
+        # this span as their X-axis so each plot shows the broader CV context
+        # (where this fold sits in the timeline) instead of a 1-month sliver.
+        all_fold_list = list(split_iter)
+        oos_span_dates: tuple | None = None
+        if all_fold_list:
+            first_test_idx = all_fold_list[0][1][0]
+            last_test_idx = all_fold_list[-1][1][-1]
+            oos_span_dates = (
+                pd.to_datetime(df.loc[first_test_idx, "date"]),
+                pd.to_datetime(df.loc[last_test_idx, "date"]),
+            )
+        split_iter = iter(all_fold_list)
+
         # Build predictors ONCE before the fold loop so FT instances retain
         # their state (booster / model weights / forest) across folds. Cold
         # variants reset internally on each fit() so reusing them is safe.
@@ -671,11 +686,13 @@ class BenchmarkRunner:
                         self._save_fold_plot(
                             cfg, df, mode, fold_id, best_fold,
                             X_te, d_te, fold_predictions[best_fold.name],
+                            xlim_dates=oos_span_dates,
                         )
                     if len(fold_predictions) > 1:
                         self._save_fold_plot_multi(
                             cfg, df, mode, fold_id, fold_predictions,
                             X_te, d_te,
+                            xlim_dates=oos_span_dates,
                         )
                 # Keep ALL predictors' predictions for this fold — used to
                 # build the stitched plot using the GLOBAL best predictor.
@@ -1186,9 +1203,12 @@ class BenchmarkRunner:
     def _save_fold_plot_multi(
         self, cfg: RunConfig, df: pd.DataFrame, mode: str, fold_id: int,
         fold_predictions: dict, X_te: pd.DataFrame, d_te: pd.Series,
+        xlim_dates: tuple | None = None,
     ) -> None:
         """Save multi-classifier plots for one CV fold (B-multi synth equity overlay,
-        A-multi step panel)."""
+        A-multi step panel). xlim_dates: optional (start, end) to widen X-axis to
+        the full OOS span across all folds (lets each fold's plot show its
+        position in the broader CV timeline)."""
         from ..visualization.regime_plots import plot_synth_equity_multi, plot_regime_step_multi
 
         preds_dict: dict[str, pd.Series] = {}
@@ -1205,6 +1225,7 @@ class BenchmarkRunner:
                 df, preds_dict,
                 PLOTS_DIR / f"B_multi_{mode}_fold{fold_id+1}.png",
                 suffix, split_dt,
+                xlim_dates=xlim_dates,
             )
             plot_regime_step_multi(
                 df, preds_dict,
@@ -1222,6 +1243,7 @@ class BenchmarkRunner:
         self, cfg: RunConfig, df: pd.DataFrame, mode: str, fold_id: int,
         best: PredictionResult, X_te: pd.DataFrame, d_te: pd.Series,
         test_predictions: np.ndarray,
+        xlim_dates: tuple | None = None,
     ) -> None:
         """Save the 3 prediction plots for one CV fold's best predictor.
 
@@ -1244,13 +1266,13 @@ class BenchmarkRunner:
         out_dir = PLOTS_DIR
         split_dt = d_te.iloc[0]
         try:
-            # Pass labels=out (only test bars are non-empty) → auto-zoom to fold.
+            # When xlim_dates is supplied (full OOS span), it overrides auto-zoom.
             _plot_A(df, runs, out_dir / f"A_pred_{mode}_fold{fold_id+1}.png", suffix,
-                    split_dt, labels=out)
+                    split_dt, labels=out, xlim_dates=xlim_dates)
             # _plot_B takes (raw_labels, smooth, runs) — raw drives the equity
             # curve (matches synth_gain metric), smooth drives the regime bands.
-            # Auto-zoom triggered by `out` being sparse (empty in train, set in fold's test).
-            _plot_B(df, out, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
+            _plot_B(df, out, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png",
+                    suffix, split_dt, xlim_dates=xlim_dates)
             console.print(
                 f"      [dim]plots saved: A/B_pred_{mode}_fold{fold_id+1}.png "
                 f"(predictor={best.name}, κ={best.kappa:+.3f})[/dim]"

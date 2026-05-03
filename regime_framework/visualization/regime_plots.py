@@ -108,17 +108,29 @@ def _maybe_zoom(ax, dates, labels, padding_bars: int = 0) -> None:
     ax.set_xlim(dates[lo], dates[hi])
 
 
-def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None, labels=None) -> None:
+def _apply_xlim(ax, xlim_dates: tuple | None) -> bool:
+    """If xlim_dates=(start, end) is provided, set ax xlim and return True.
+    Used by per-fold plots to override auto-zoom and show the broader OOS
+    timeline (first fold start → last fold end) instead of just one fold.
+    """
+    if xlim_dates is None:
+        return False
+    start, end = xlim_dates
+    ax.set_xlim(start, end)
+    return True
+
+
+def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None, labels=None,
+            xlim_dates: tuple | None = None) -> None:
     fig, (ax_price, ax_regime) = plt.subplots(
         2, 1, figsize=(14, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]},
     )
     dates = pd.to_datetime(df["date"].values)
     closes = df["close"].values
-    # Auto-zoom: if `labels` is supplied and only covers a strict subset of
-    # the timeline (typical prediction plot — empty in train, set in test),
-    # crop the x-axis to the prediction window. Label plots pass labels=None
-    # OR labels covering the full range, which is a no-op.
-    if labels is not None:
+    # X-axis priority: explicit xlim_dates > auto-zoom from labels > full range.
+    # Per-fold plots pass xlim_dates = full OOS span (first fold start, last
+    # fold end) so each fold's plot shows the broader CV context.
+    if not _apply_xlim(ax_price, xlim_dates) and labels is not None:
         _maybe_zoom(ax_price, dates, labels)
     ax_price.plot(dates, closes, color="black", linewidth=0.7)
     ax_price.set_yscale("log")
@@ -149,6 +161,7 @@ def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None, labels=None) -
 
 def _plot_B(
     df, raw_labels, smooth, runs, out_path, title_suffix: str, split_dt=None,
+    xlim_dates: tuple | None = None,
 ) -> None:
     """raw_labels drive the equity curve (matches the synth_gain metric);
     smooth drives the colored regime bands (visual only). Earlier code used
@@ -165,9 +178,9 @@ def _plot_B(
         ax.axvspan(s_dt, e_dt, color=LABEL_COLORS.get(lab, "gray"), alpha=0.10, lw=0)
     ax.plot(dates, closes, color="black", linewidth=0.7, label="close (actual)")
     ax.plot(dates, synth_eq, color="#1f77b4", linewidth=1.5, label="synth equity (long bull / short bear)")
-    # Auto-zoom on the prediction window when raw_labels is sparse (e.g.
-    # prediction plots where only the test slice has non-empty labels).
-    _maybe_zoom(ax, dates, raw_labels.values if hasattr(raw_labels, "values") else raw_labels)
+    # X-axis priority: explicit xlim_dates > auto-zoom from raw_labels.
+    if not _apply_xlim(ax, xlim_dates):
+        _maybe_zoom(ax, dates, raw_labels.values if hasattr(raw_labels, "values") else raw_labels)
     ax.set_yscale("log")
     ax.set_ylabel("price / equity (log)")
     ax.set_title(f"(B) [{title_suffix}] synthetic regime-trader equity vs price")
@@ -270,6 +283,7 @@ def plot_synth_equity_multi(
     title_suffix: str,
     split_dt=None,
     denoise_window: int = 168,
+    xlim_dates: tuple | None = None,
 ) -> None:
     """Overlay synthetic regime-trader equity curves for multiple predictors.
 
@@ -301,9 +315,8 @@ def plot_synth_equity_multi(
                     alpha=0.9, label=name)
         except Exception:
             continue
-    # Zoom to the prediction span — same logic as _plot_B; predictors all
-    # agree on which bars are predicted (test slice), so any one is enough.
-    if sample_preds is not None:
+    # X-axis priority: explicit xlim_dates > auto-zoom from any predictor.
+    if not _apply_xlim(ax, xlim_dates) and sample_preds is not None:
         _maybe_zoom(ax, dates, sample_preds)
 
     ax.set_yscale("log")
