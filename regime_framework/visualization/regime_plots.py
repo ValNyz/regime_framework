@@ -201,12 +201,22 @@ def _plot_B(
     # line on screen (instead of starting at the dataset's 2019 price level).
     anchor = split_dt if split_dt is not None else (xlim_dates[0] if xlim_dates else None)
     synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor)
+    # Mask the equity to NaN outside the prediction window so flat segments
+    # (where the strategy has no position) are not drawn — cleaner Y-axis
+    # cadrage when xlim_dates is wider than the prediction span.
+    raw_arr = raw_labels.values if hasattr(raw_labels, "values") else np.asarray(raw_labels)
+    pred_mask = raw_arr != ""
+    if pred_mask.any() and not pred_mask.all():
+        synth_eq_plot = synth_eq.astype(float).copy()
+        synth_eq_plot[~pred_mask] = np.nan
+    else:
+        synth_eq_plot = synth_eq
 
     fig, ax = plt.subplots(figsize=(14, 6))
     for lab, s_dt, e_dt in runs:
         ax.axvspan(s_dt, e_dt, color=LABEL_COLORS.get(lab, "gray"), alpha=0.10, lw=0)
     ax.plot(dates, closes, color="black", linewidth=0.7, label="close (actual)")
-    ax.plot(dates, synth_eq, color="#1f77b4", linewidth=1.5, label="synth equity (long bull / short bear)")
+    ax.plot(dates, synth_eq_plot, color="#1f77b4", linewidth=1.5, label="synth equity (long bull / short bear)")
     # X-axis priority: explicit xlim_dates > auto-zoom from raw_labels.
     if not _apply_xlim(ax, xlim_dates):
         _maybe_zoom(ax, dates, raw_labels.values if hasattr(raw_labels, "values") else raw_labels)
@@ -358,7 +368,14 @@ def plot_synth_equity_multi(
                 sample_preds = preds_arr
             synth_eq, _ = synth_equity_curve(closes, preds_arr)
             synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor_dt)
-            ax.plot(dates, synth_eq, color=cmap(i % 10), linewidth=1.2,
+            # Mask flat segments outside the prediction window for clean Y-axis.
+            pred_mask = preds_arr != ""
+            if pred_mask.any() and not pred_mask.all():
+                synth_eq_plot = synth_eq.astype(float).copy()
+                synth_eq_plot[~pred_mask] = np.nan
+            else:
+                synth_eq_plot = synth_eq
+            ax.plot(dates, synth_eq_plot, color=cmap(i % 10), linewidth=1.2,
                     alpha=0.9, label=name)
         except Exception:
             continue
@@ -385,8 +402,14 @@ def plot_regime_step_multi(
     title_suffix: str,
     split_dt=None,
     denoise_window: int = 168,
+    xlim_dates: tuple | None = None,
 ) -> None:
-    """Plot price (top) + one row per predictor showing its bull/bear track (bottom)."""
+    """Plot price (top) + one row per predictor showing its bull/bear track (bottom).
+
+    xlim_dates: optional (start, end) — clamps both the price axis and the
+    panel axis to this window. If None, falls back to auto-zoom on the
+    union of predictor spans.
+    """
     closes = df["close"].values.astype(float)
     dates = pd.to_datetime(df["date"].values)
     n_pred = len(predictions_by_name)
@@ -409,8 +432,11 @@ def plot_regime_step_multi(
     items = sorted(predictions_by_name.items())
     yticks = []
     yticklabels = []
+    sample_preds = None
     for i, (name, preds) in enumerate(items):
         try:
+            if sample_preds is None:
+                sample_preds = preds.values if hasattr(preds, "values") else np.asarray(preds)
             smooth = denoise_labels(preds, window=denoise_window)
             runs = _compute_runs(df, smooth)
             for lab, s_dt, e_dt in runs:
@@ -428,6 +454,9 @@ def plot_regime_step_multi(
     ax_panel.grid(True, alpha=0.3)
     if split_dt is not None:
         ax_panel.axvline(split_dt, color="blue", linestyle="--", linewidth=1.2, alpha=0.7)
+    # X-axis: explicit xlim_dates > auto-zoom from any predictor.
+    if not _apply_xlim(ax_price, xlim_dates) and sample_preds is not None:
+        _maybe_zoom(ax_price, dates, sample_preds)
     ax_price.legend(handles=_legend_handles(), loc="upper left", framealpha=0.9)
     plt.tight_layout()
     plt.savefig(out_path, dpi=120)

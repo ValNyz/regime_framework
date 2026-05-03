@@ -692,33 +692,27 @@ class BenchmarkRunner:
                 if getattr(p, "is_ensemble", False):
                     p.update_prior_kappas(base_kappas)
 
-            # Save prediction plots for this fold's best predictor + multi overlay
-            if fold_results:
-                best_fold = max(
-                    fold_results, key=lambda r: r.kappa if not np.isnan(r.kappa) else -2
-                )
-                # Per-fold plots: gated by both 'enabled' (master) and 'per_fold'.
-                if cfg.plots.enabled and cfg.plots.per_fold:
-                    if best_fold.name in fold_predictions:
-                        self._save_fold_plot(
-                            cfg, df, mode, fold_id, best_fold,
-                            X_te, d_te, fold_predictions[best_fold.name],
-                            xlim_dates=oos_span_dates,
-                        )
-                    if len(fold_predictions) > 1:
-                        self._save_fold_plot_multi(
-                            cfg, df, mode, fold_id, fold_predictions,
-                            X_te, d_te,
-                            xlim_dates=oos_span_dates,
-                        )
+            # Save multi-overlay plot per fold (shows all predictors).
+            # Single-best per-fold plot is deferred to AFTER the loop so we can
+            # use the GLOBAL top-1 predictor (by --rank-by) on every fold,
+            # consistent with the stitched plot.
+            if fold_results and cfg.plots.enabled and cfg.plots.per_fold:
+                if len(fold_predictions) > 1:
+                    self._save_fold_plot_multi(
+                        cfg, df, mode, fold_id, fold_predictions,
+                        X_te, d_te,
+                        xlim_dates=oos_span_dates,
+                    )
                 # Keep ALL predictors' predictions for this fold — used to
-                # build the stitched plot using the GLOBAL best predictor.
-                # Always recorded (cheap, lets the end-of-CV stitched plot
-                # work even if per-fold plots are disabled).
+                # build the stitched plot using the GLOBAL best predictor and
+                # for the deferred per-fold _save_fold_plot pass below.
                 all_fold_preds.append({
                     "fold_id": fold_id,
                     "test_index": X_te.index,
+                    "X_te": X_te,
+                    "d_te": d_te,
                     "predictions": dict(fold_predictions),  # name -> ndarray
+                    "fold_results": list(fold_results),
                 })
 
                 # Per-fold feature importance: best classical predictor with
@@ -802,6 +796,28 @@ class BenchmarkRunner:
                 )
             except Exception as e:
                 console.print(f"[yellow]Stitched plot failed: {e}[/yellow]")
+
+            # ---- Deferred per-fold single-best plot ----
+            # Use the GLOBAL top-1 predictor (by --rank-by) on EVERY fold so
+            # the per-fold A/B plots are consistent across folds and aligned
+            # with the stitched plot's #1 line.
+            if cfg.plots.enabled and cfg.plots.per_fold:
+                global_best_name = str(top_predictors.index[0])
+                for fp in all_fold_preds:
+                    if global_best_name not in fp["predictions"]:
+                        continue
+                    fold_results_for_fp = fp.get("fold_results", [])
+                    fold_best_obj = next(
+                        (r for r in fold_results_for_fp if r.name == global_best_name),
+                        None,
+                    )
+                    if fold_best_obj is None:
+                        continue
+                    self._save_fold_plot(
+                        cfg, df, mode, fp["fold_id"], fold_best_obj,
+                        fp["X_te"], fp["d_te"], fp["predictions"][global_best_name],
+                        xlim_dates=oos_span_dates,
+                    )
 
         # Feature importance for the best CLASSICAL predictor with native
         # importance (computed on the last fold's test set — that fold has
