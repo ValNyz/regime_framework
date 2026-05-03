@@ -60,7 +60,7 @@ class _SeqPredictor(BasePredictor):
     supports_finetune = True
 
     def __init__(
-        self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=1024,
+        self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=4096,
         lr=1e-3, dropout=0.2,
         finetune: bool = False, ft_epochs: int | None = None, ft_lr_scale: float = 0.5,
     ):

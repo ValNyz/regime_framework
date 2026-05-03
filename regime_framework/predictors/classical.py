@@ -249,7 +249,7 @@ class MLPPredictor(BasePredictor):
     supports_finetune = True
 
     def __init__(
-        self, hidden=(256, 128, 64), dropout=0.2, epochs=40, batch_size=4096, lr=1e-3,
+        self, hidden=(256, 128, 64), dropout=0.2, epochs=40, batch_size=16384, lr=1e-3,
         finetune: bool = False, ft_epochs: int | None = None, ft_lr_scale: float = 0.5,
     ) -> None:
         self.hidden = hidden
