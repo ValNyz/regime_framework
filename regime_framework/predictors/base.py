@@ -56,8 +56,60 @@ class BasePredictor(ABC):
     ) -> np.ndarray:
         ...
 
+    def feature_importances(
+        self,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        n_repeats: int = 3,
+        random_state: int = 42,
+    ) -> pd.Series | None:
+        """Return feature importance as a Series indexed by column name.
+
+        Default implementation: permutation importance via sklearn — works for
+        any predictor that exposes `predict(X, dates, df)`. Subclasses with
+        native importance (`.feature_importances_`, `.coef_`) should override
+        for speed.
+
+        Returns None when importance is structurally unavailable (rule-based
+        deterministic predictors, pretrained zero-shot).
+        """
+        try:
+            return _permutation_importance(
+                self, X_test, y_test, n_repeats=n_repeats, random_state=random_state,
+            )
+        except Exception:
+            return None
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name={self.name}>"
+
+
+def _permutation_importance(
+    predictor: "BasePredictor",
+    X: pd.DataFrame,
+    y: pd.Series,
+    n_repeats: int = 3,
+    random_state: int = 42,
+) -> pd.Series:
+    """Permutation importance: shuffle each column, measure accuracy drop.
+
+    Uses dummy `dates`/`df` since column-shuffling preserves alignment.
+    """
+    from sklearn.metrics import accuracy_score
+    rng = np.random.default_rng(random_state)
+    base_pred = predictor.predict(X, pd.Series(np.arange(len(X))), X.iloc[:0])
+    base_score = accuracy_score(y.values, base_pred)
+    importances = np.zeros(X.shape[1])
+    cols = list(X.columns)
+    for j, col in enumerate(cols):
+        drops = []
+        for _ in range(n_repeats):
+            X_perm = X.copy()
+            X_perm[col] = rng.permutation(X_perm[col].values)
+            perm_pred = predictor.predict(X_perm, pd.Series(np.arange(len(X_perm))), X_perm.iloc[:0])
+            drops.append(base_score - accuracy_score(y.values, perm_pred))
+        importances[j] = float(np.mean(drops))
+    return pd.Series(importances, index=cols, name="importance").sort_values(ascending=False)
 
 
 # Common helpers (used by sub-classes)

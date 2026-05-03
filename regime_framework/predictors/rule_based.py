@@ -93,6 +93,11 @@ class _RuleBasedBase(BasePredictor):
         regime = self._classify(df_ind)
         return _binarize(regime, df_ind)
 
+    def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
+        # Rule-based predictors use a fixed indicator set, not the X feature
+        # matrix → no learned importance to report.
+        return None
+
     def _classify(self, df: pd.DataFrame) -> pd.Series:
         raise NotImplementedError
 

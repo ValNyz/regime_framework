@@ -35,6 +35,18 @@ class _SklearnBase(BasePredictor):
             Xs = X_test.values
         return self.clf.predict(Xs)
 
+    def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
+        """Native sklearn importances when available; else permutation fallback."""
+        if hasattr(self.clf, "feature_importances_"):
+            imp = np.asarray(self.clf.feature_importances_, dtype=float)
+            return pd.Series(imp, index=X_test.columns, name="importance").sort_values(ascending=False)
+        if hasattr(self.clf, "coef_"):
+            coef = np.asarray(self.clf.coef_, dtype=float)
+            # Multi-class: take L1 norm across classes; binary: take abs value
+            imp = np.abs(coef).mean(axis=0) if coef.ndim == 2 else np.abs(coef)
+            return pd.Series(imp, index=X_test.columns, name="importance").sort_values(ascending=False)
+        return super().feature_importances(X_test, y_test, n_repeats, random_state)
+
 
 class LogRegPredictor(_SklearnBase):
     name = "LogReg"
@@ -109,3 +121,9 @@ class XGBoostPredictor(BasePredictor):
     def predict(self, X_test, dates_test, df_test):
         pred_int = self.clf.predict(X_test.values)
         return np.array([self.idx_to_cls[int(i)] for i in pred_int], dtype=object)
+
+    def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
+        if hasattr(self.clf, "feature_importances_"):
+            imp = np.asarray(self.clf.feature_importances_, dtype=float)
+            return pd.Series(imp, index=X_test.columns, name="importance").sort_values(ascending=False)
+        return super().feature_importances(X_test, y_test, n_repeats, random_state)

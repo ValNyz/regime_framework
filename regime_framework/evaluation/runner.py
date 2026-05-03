@@ -197,6 +197,10 @@ class BenchmarkRunner:
                 predictor_name=best.name,
                 split_dt=d_te.iloc[0],
             )
+            # Feature importance from the best predictor
+            best_obj = next((p for p in predictors if p.name == best.name), None)
+            if best_obj is not None:
+                self._print_and_save_importance(best_obj, X_te, y_te)
 
         return {
             "results": [r.__dict__ for r in results],
@@ -492,6 +496,37 @@ class BenchmarkRunner:
                 f"{r.metadata.get('elapsed_sec', 0):.1f}s",
             )
         console.print(table)
+
+    def _print_and_save_importance(self, predictor: BasePredictor, X_te, y_te) -> None:
+        try:
+            with console.status(f"[cyan]Computing feature importance ({predictor.name})..."):
+                imp = predictor.feature_importances(X_te, y_te, n_repeats=3)
+        except Exception as e:
+            console.print(f"[yellow]feature_importances skipped ({predictor.name}): {e}[/yellow]")
+            return
+        if imp is None or len(imp) == 0:
+            console.print(f"[dim]feature_importances unavailable for {predictor.name}.[/dim]")
+            return
+
+        # Save full ranking
+        out_csv = RESULTS_DIR / f"feature_importance_{predictor.name}.csv"
+        imp_df = imp.reset_index().rename(columns={"index": "feature"})
+        imp_df.columns = ["feature", "importance"]
+        imp_df.to_csv(out_csv, index=False)
+
+        top = imp.head(20)
+        max_imp = float(top.iloc[0]) if len(top) and top.iloc[0] != 0 else 1.0
+        table = Table(title=f"Top 20 features — {predictor.name}")
+        table.add_column("rank", justify="right", style="dim")
+        table.add_column("feature")
+        table.add_column("importance", justify="right")
+        table.add_column("bar")
+        for rank, (feat, val) in enumerate(top.items(), 1):
+            bar_len = int(round(20 * float(val) / max_imp)) if max_imp > 0 else 0
+            bar = "█" * max(bar_len, 0)
+            table.add_row(str(rank), str(feat), f"{val:.4f}", bar)
+        console.print(table)
+        console.print(f"[dim]Full ranking → {out_csv}[/dim]")
 
     def _save_summary_csv(self) -> None:
         df = pd.DataFrame([
