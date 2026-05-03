@@ -284,7 +284,12 @@ class BenchmarkRunner:
             predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
         )
         self.results = results
-        self._print_summary(baseline_acc)
+        from .metrics import buy_and_hold_gain
+        bh_gain_split = (
+            buy_and_hold_gain(np.asarray(df_te["close"].values, dtype=np.float64))
+            if "close" in df_te.columns else float("nan")
+        )
+        self._print_summary(baseline_acc, bh_gain_split)
         self._save_summary_csv()
 
         if results:
@@ -477,6 +482,8 @@ class BenchmarkRunner:
         console.print(f"[bold]Running {len(predictors)} predictors[/bold]")
 
         per_fold_rows: list[dict] = []
+        # Long-format per-month gain rows: one entry per (fold, predictor, month).
+        monthly_rows: list[dict] = []
         # Keep ALL predictors' predictions per fold (used for the stitched plot
         # at the end, where we pick the predictor with the best MEAN kappa across folds).
         all_fold_preds: list[dict] = []
@@ -532,16 +539,42 @@ class BenchmarkRunner:
             last_fold_X_te = X_te
             last_fold_y_te = y_te
 
+            # Per-fold buy-and-hold reference (same for every predictor in
+            # this fold — depends only on prices over the test slice).
+            from .metrics import buy_and_hold_gain, synth_gain_by_month
+            closes_te_arr = (
+                np.asarray(df_te["close"].values, dtype=np.float64)
+                if "close" in df_te.columns else None
+            )
+            bh_gain_fold = buy_and_hold_gain(closes_te_arr) if closes_te_arr is not None else float("nan")
+
             for r in fold_results:
                 per_fold_rows.append({
                     "fold": fold_id, "predictor": r.name, "family": r.family,
                     "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
                     "synth_gain": r.synth_gain,
+                    "bh_gain": bh_gain_fold,
                     "n_test": r.n_test, "elapsed_sec": r.metadata.get("elapsed_sec", 0),
                     "test_start": str(d_te.iloc[0].date()),
                     "test_end": str(d_te.iloc[-1].date()),
                     "baseline_acc": baseline_acc,
                 })
+
+            # Per-month gain per predictor — written to a long-format CSV at
+            # end of CV so users can audit when each strategy made/lost money.
+            if closes_te_arr is not None:
+                for r in fold_results:
+                    preds = fold_predictions.get(r.name)
+                    if preds is None or len(preds) != len(closes_te_arr):
+                        continue
+                    monthly = synth_gain_by_month(
+                        closes_te_arr, np.asarray(preds), d_te.values,
+                    )
+                    for month, gain in monthly.items():
+                        monthly_rows.append({
+                            "fold": fold_id, "predictor": r.name, "family": r.family,
+                            "month": month, "gain": float(gain),
+                        })
 
             # Refresh FT ensembles' weights for the next fold — softmax of this
             # fold's per-base kappas. Cold ensembles ignore this hook.
@@ -599,6 +632,10 @@ class BenchmarkRunner:
         per_fold_df = pd.DataFrame(per_fold_rows)
         per_fold_df["cv_mode"] = mode
         per_fold_df.to_csv(RESULTS_DIR / f"cv_{mode}_per_fold.csv", index=False)
+        if monthly_rows:
+            monthly_df = pd.DataFrame(monthly_rows)
+            monthly_df["cv_mode"] = mode
+            monthly_df.to_csv(RESULTS_DIR / f"cv_{mode}_monthly_gain.csv", index=False)
         self._print_cv_summary(per_fold_df, mode)
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
@@ -706,23 +743,50 @@ class BenchmarkRunner:
         )
 
     def _print_cv_summary(self, per_fold: pd.DataFrame, mode: str) -> None:
+        from .metrics import compound_returns
+
+        def _compound(series: pd.Series) -> float:
+            return compound_returns(series.values)
+
         agg = per_fold.groupby(["predictor", "family"]).agg(
             kappa_mean=("kappa", "mean"),
             kappa_std=("kappa", "std"),
-            kappa_min=("kappa", "min"),
-            kappa_max=("kappa", "max"),
             acc_mean=("accuracy", "mean"),
             f1_mean=("f1_macro", "mean"),
+            gain_mean=("synth_gain", "mean"),
+            gain_total=("synth_gain", _compound),
             n_folds=("fold", "count"),
         ).reset_index().sort_values("kappa_mean", ascending=False)
 
+        # Buy-and-hold reference: same per fold, so de-dup by fold first.
+        bh_per_fold = per_fold.drop_duplicates("fold").set_index("fold").get(
+            "bh_gain", pd.Series(dtype=float)
+        )
+        bh_total = compound_returns(bh_per_fold.values) if len(bh_per_fold) else float("nan")
+        bh_mean = float(bh_per_fold.mean()) if len(bh_per_fold) else float("nan")
+
+        agg["gain_vs_bh"] = agg["gain_total"] - bh_total
         agg["cv_mode"] = mode
         agg.to_csv(RESULTS_DIR / f"cv_{mode}_aggregated.csv", index=False)
 
-        title = f"{mode.replace('_', '-')} aggregate — sorted by mean κ"
+        title = f"{mode.replace('_', '-')} aggregate — sorted by mean κ (B&H total = {bh_total*100:+.1f}%)"
         table = Table(title=title)
-        for col in ("predictor", "family", "kappa_mean", "kappa_std", "kappa_min", "kappa_max", "acc_mean", "f1_mean", "n_folds"):
+        for col in (
+            "predictor", "family", "κ_mean", "κ_std", "acc", "F1",
+            "gain_mean", "gain_total", "vs_BH", "n_folds",
+        ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
+
+        # B&H reference row at the top.
+        table.add_row(
+            "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
+            "--", "--", "--", "--",
+            f"[dim]{bh_mean*100:+.1f}%[/dim]",
+            f"[dim]{bh_total*100:+.1f}%[/dim]",
+            "[dim]0.0%[/dim]",
+            f"[dim]{int(len(bh_per_fold))}[/dim]",
+        )
+
         for _, r in agg.iterrows():
             color = ""
             km = float(r["kappa_mean"])
@@ -733,10 +797,17 @@ class BenchmarkRunner:
             elif km < 0:
                 color = "red"
             kstr = f"[{color}]{km:+.3f}[/{color}]" if color else f"{km:+.3f}"
+            gain_total = float(r["gain_total"])
+            vs_bh = float(r["gain_vs_bh"])
+            vs_bh_color = "green" if vs_bh > 0 else "red"
             table.add_row(
                 str(r["predictor"]), str(r["family"]),
-                kstr, f"{r['kappa_std']:.3f}", f"{r['kappa_min']:+.3f}", f"{r['kappa_max']:+.3f}",
-                f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}", str(int(r["n_folds"])),
+                kstr, f"{r['kappa_std']:.3f}",
+                f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}",
+                f"{r['gain_mean']*100:+.1f}%",
+                f"{gain_total*100:+.1f}%",
+                f"[{vs_bh_color}]{vs_bh*100:+.1f}%[/{vs_bh_color}]",
+                str(int(r["n_folds"])),
             )
         console.print(table)
 
@@ -793,22 +864,32 @@ class BenchmarkRunner:
             table.add_row(*cells)
         console.print(table)
 
-    def _print_summary(self, baseline_acc: float) -> None:
+    def _print_summary(self, baseline_acc: float, bh_gain: float = float("nan")) -> None:
         if not self.results:
             console.print("[yellow]No predictor results.[/yellow]")
             return
         ordered = sorted(self.results, key=lambda r: -(r.kappa if not np.isnan(r.kappa) else -2))
-        table = Table(title="Predictor benchmark — sorted by Cohen's κ")
+        bh_str = f" (B&H = {bh_gain*100:+.1f}%)" if not np.isnan(bh_gain) else ""
+        table = Table(title=f"Predictor benchmark — sorted by κ{bh_str}")
         table.add_column("rank", style="dim", justify="right")
         table.add_column("predictor", style="bold")
         table.add_column("family")
         table.add_column("acc", justify="right")
         table.add_column("κ", justify="right")
         table.add_column("F1", justify="right")
+        table.add_column("gain", justify="right")
+        table.add_column("vs_BH", justify="right")
         table.add_column("n_test", justify="right")
         table.add_column("elapsed", justify="right")
         # baseline row
-        table.add_row("--", "[dim]baseline[/dim]", "--", f"{baseline_acc:.3f}", "0.000", "--", "--", "--")
+        table.add_row("--", "[dim]baseline[/dim]", "--",
+                      f"{baseline_acc:.3f}", "0.000", "--", "--", "--", "--", "--")
+        # buy-and-hold reference
+        if not np.isnan(bh_gain):
+            table.add_row("--", "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
+                          "--", "--", "--",
+                          f"[dim]{bh_gain*100:+.1f}%[/dim]", "[dim]0.0%[/dim]",
+                          "--", "--")
         for i, r in enumerate(ordered, 1):
             color = ""
             if r.kappa > 0.4:
@@ -818,11 +899,19 @@ class BenchmarkRunner:
             elif r.kappa < 0:
                 color = "red"
             kappa_str = f"[{color}]{r.kappa:+.3f}[/{color}]" if color else f"{r.kappa:+.3f}"
+            gain_str = f"{r.synth_gain*100:+.1f}%" if not np.isnan(r.synth_gain) else "--"
+            if not np.isnan(r.synth_gain) and not np.isnan(bh_gain):
+                vs_bh = r.synth_gain - bh_gain
+                vs_bh_color = "green" if vs_bh > 0 else "red"
+                vs_bh_str = f"[{vs_bh_color}]{vs_bh*100:+.1f}%[/{vs_bh_color}]"
+            else:
+                vs_bh_str = "--"
             table.add_row(
                 str(i), r.name, r.family,
                 f"{r.accuracy:.3f}",
                 kappa_str,
                 f"{r.f1_macro:.3f}",
+                gain_str, vs_bh_str,
                 str(r.n_test),
                 f"{r.metadata.get('elapsed_sec', 0):.1f}s",
             )
