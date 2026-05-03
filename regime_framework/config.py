@@ -86,8 +86,16 @@ class LabelConfig:
     hysteresis_bars: int = 0
     strong_threshold: float = 2.0
     # triple_barrier extras (unused for trend_scan)
-    horizon: int = 48
-    alpha: float = 1.5
+    # horizon: max forward bars to look for a barrier hit (timeout if none).
+    # tp_mult/sl_mult: barrier distance from entry in σ units. σ is the rolling
+    #   std of log-returns over vol_lookback bars. Asymmetric (tp != sl) =
+    #   different risk/reward profile.
+    horizon: int = 720                   # 30d at 1h
+    tp_mult: float = 2.0                 # take-profit barrier in σ units
+    sl_mult: float | None = None         # stop-loss; None = same as tp_mult
+    vol_lookback: int = 168              # 1 week at 1h
+    # Backward-compat alias (older configs used 'alpha' for symmetric barriers).
+    alpha: float | None = None
 
 
 @dataclass

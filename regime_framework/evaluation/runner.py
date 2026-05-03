@@ -710,7 +710,7 @@ class BenchmarkRunner:
             monthly_df = pd.DataFrame(monthly_rows)
             monthly_df["cv_mode"] = mode
             monthly_df.to_csv(RESULTS_DIR / f"cv_{mode}_monthly_gain.csv", index=False)
-        self._print_cv_summary(per_fold_df, mode)
+        self._print_cv_summary(per_fold_df, mode, cfg=cfg)
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
         # kappa across all folds, then concatenate ITS predictions over all
@@ -837,7 +837,7 @@ class BenchmarkRunner:
             "(future-info advantage). Large Δ = predictor relies on regime stability.[/dim]"
         )
 
-    def _print_cv_summary(self, per_fold: pd.DataFrame, mode: str) -> None:
+    def _print_cv_summary(self, per_fold: pd.DataFrame, mode: str, cfg: RunConfig | None = None) -> None:
         from .metrics import compound_returns
 
         def _compound(series: pd.Series) -> float:
@@ -867,7 +867,8 @@ class BenchmarkRunner:
         # Sort by user-chosen criterion. Gain / vs_BH ranks differently from
         # κ when predictors are right on high-magnitude bars but noisy on
         # low-magnitude bars (common in strongly-directional markets).
-        rank_by = getattr(cfg.predictors, "rank_by", "kappa")
+        cfg_eff = cfg if cfg is not None else self.cfg
+        rank_by = getattr(cfg_eff.predictors, "rank_by", "kappa")
         sort_col = {
             "kappa": "kappa_mean",
             "gain": "gain_total",
