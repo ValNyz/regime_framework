@@ -106,11 +106,18 @@ def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None) -> None:
     plt.close(fig)
 
 
-def _plot_B(df, smooth, runs, out_path, title_suffix: str, split_dt=None) -> None:
+def _plot_B(
+    df, raw_labels, smooth, runs, out_path, title_suffix: str, split_dt=None,
+) -> None:
+    """raw_labels drive the equity curve (matches the synth_gain metric);
+    smooth drives the colored regime bands (visual only). Earlier code used
+    smooth for both, which made the plot diverge from the console gain metric
+    by up to a 7-day lag (denoise window).
+    """
     from ..evaluation.metrics import synth_equity_curve
     dates = pd.to_datetime(df["date"].values)
     closes = df["close"].values
-    synth_eq, _ = synth_equity_curve(closes, smooth.values)
+    synth_eq, _ = synth_equity_curve(closes, raw_labels.values)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     for lab, s_dt, e_dt in runs:
@@ -190,8 +197,10 @@ def plot_stitched_oos_equity(
         if len(preds) == len(idx):
             out.loc[idx] = preds
 
-    smooth = denoise_labels(out, window=denoise_window)
-    synth_eq, _ = synth_equity_curve(closes, smooth.values)
+    # Use raw stitched predictions (no smoothing) — matches the per-fold
+    # synth_gain metric. Smoothing was a 7-day visual cleanup that diverged
+    # the equity curve from the reported numbers.
+    synth_eq, _ = synth_equity_curve(closes, out.values)
 
     fig, ax = plt.subplots(figsize=(14, 7))
     ax.plot(dates, closes, color="black", linewidth=0.7, alpha=0.4, label="close (actual)")
@@ -249,8 +258,11 @@ def plot_synth_equity_multi(
     items = sorted(predictions_by_name.items())  # stable color assignment
     for i, (name, preds) in enumerate(items):
         try:
-            smooth = denoise_labels(preds, window=denoise_window)
-            synth_eq, _ = synth_equity_curve(closes, smooth.values)
+            # Use raw predictions (no smoothing) so the equity curves match
+            # the synth_gain console metric. Earlier 168-bar smoothing made
+            # the multi plot diverge from the per-fold gain numbers.
+            preds_arr = preds if isinstance(preds, np.ndarray) else np.asarray(preds)
+            synth_eq, _ = synth_equity_curve(closes, preds_arr)
             ax.plot(dates, synth_eq, color=cmap(i % 10), linewidth=1.2,
                     alpha=0.9, label=name)
         except Exception:
@@ -329,7 +341,8 @@ def save_label_plots(df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: Ru
     runs = _compute_runs(df, smooth)
     suffix = f"labels-{cfg.target}-{cfg.timeframe}"
     _plot_A(df, runs, out_dir / "A_labels_background.png", suffix)
-    _plot_B(df, smooth, runs, out_dir / "B_labels_synth.png", suffix)
+    # Equity uses raw labels (matches metric); regime bands use smoothed.
+    _plot_B(df, labels, smooth, runs, out_dir / "B_labels_synth.png", suffix)
     _plot_C(df, smooth, runs, out_dir / "C_labels_multicolor.png", suffix)
 
 
@@ -341,5 +354,7 @@ def save_prediction_plots(
     runs = _compute_runs(df, smooth)
     suffix = f"pred-{predictor_name}-{cfg.target}-{cfg.timeframe}"
     _plot_A(df, runs, out_dir / "A_predictions_background.png", suffix, split_dt)
-    _plot_B(df, smooth, runs, out_dir / "B_predictions_synth.png", suffix, split_dt)
+    # Equity uses raw predictions (matches synth_gain console metric);
+    # regime bands keep the 7-day smoothing for visual cleanliness.
+    _plot_B(df, predictions, smooth, runs, out_dir / "B_predictions_synth.png", suffix, split_dt)
     _plot_C(df, smooth, runs, out_dir / "C_predictions_multicolor.png", suffix, split_dt)
