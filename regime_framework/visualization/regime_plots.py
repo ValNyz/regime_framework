@@ -163,6 +163,75 @@ def _plot_C(df, smooth, runs, out_path, title_suffix: str, split_dt=None) -> Non
     plt.close(fig)
 
 
+def plot_stitched_oos_equity(
+    df: pd.DataFrame,
+    folds: list[dict],
+    out_path: Path,
+    title_suffix: str,
+    denoise_window: int = 168,
+) -> None:
+    """Stitched OOS synth equity across CV folds — best predictor per fold.
+
+    folds: list of dicts with keys
+        - test_index: pd.Index of bars in this fold's test set
+        - predictions: np.ndarray of label strings aligned with test_index
+        - predictor_name: str (for legend)
+        - kappa: float (for color intensity)
+        - test_start: str date (for boundary marker)
+    """
+    closes = df["close"].values.astype(float)
+    dates = pd.to_datetime(df["date"].values)
+    log_ret = np.zeros(len(closes))
+    log_ret[1:] = np.log(closes[1:] / closes[:-1])
+
+    # Build a single label series spanning all folds' test windows
+    out = pd.Series("", index=df.index, dtype=object)
+    for fold in folds:
+        idx = fold["test_index"]
+        preds = fold["predictions"]
+        if len(preds) == len(idx):
+            out.loc[idx] = preds
+
+    smooth = denoise_labels(out, window=denoise_window)
+    sign = np.zeros(len(smooth))
+    vals = smooth.values
+    sign[vals == "bull"] = +1.0
+    sign[vals == "bear"] = -1.0
+
+    synth_log_eq = np.cumsum(sign * log_ret)
+    synth_eq = np.exp(synth_log_eq) * float(closes[0])
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    ax.plot(dates, closes, color="black", linewidth=0.7, alpha=0.4, label="close (actual)")
+    ax.plot(dates, synth_eq, color="#1f77b4", linewidth=1.5,
+            label="OOS synth equity (best predictor per fold, stitched)")
+
+    # Fold boundary lines + per-fold annotation (predictor name + kappa)
+    for i, fold in enumerate(folds):
+        idx = fold["test_index"]
+        if len(idx) == 0:
+            continue
+        start_dt = pd.to_datetime(df.loc[idx[0], "date"])
+        ax.axvline(start_dt, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
+        # Annotate at the top of the fold
+        ax.text(
+            start_dt, ax.get_ylim()[1] * 0.95 if False else closes.max(),
+            f"  {fold['predictor_name']}\n  κ={fold['kappa']:+.3f}",
+            fontsize=7, color="gray", verticalalignment="top",
+        )
+
+    ax.set_yscale("log")
+    ax.set_ylabel("price / equity (log)")
+    ax.set_title(
+        f"(B-stitched) [{title_suffix}] OOS synth equity across {len(folds)} folds"
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", framealpha=0.9)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def plot_synth_equity_multi(
     df: pd.DataFrame,
     predictions_by_name: dict[str, pd.Series],

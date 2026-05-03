@@ -305,6 +305,9 @@ class BenchmarkRunner:
             )
 
         per_fold_rows: list[dict] = []
+        # Keep ALL predictors' predictions per fold (used for the stitched plot
+        # at the end, where we pick the predictor with the best MEAN kappa across folds).
+        all_fold_preds: list[dict] = []
 
         for train_idx, test_idx, fold_id in split_iter:
             X_tr = X.iloc[train_idx]
@@ -375,6 +378,13 @@ class BenchmarkRunner:
                         cfg, df, mode, fold_id, best_fold,
                         X_te, d_te, fold_predictions[best_fold.name],
                     )
+                # Keep ALL predictors' predictions for this fold — used to
+                # build the stitched plot using the GLOBAL best predictor.
+                all_fold_preds.append({
+                    "fold_id": fold_id,
+                    "test_index": X_te.index,
+                    "predictions": dict(fold_predictions),  # name -> ndarray
+                })
                 if len(fold_predictions) > 1:
                     self._save_fold_plot_multi(
                         cfg, df, mode, fold_id, fold_predictions,
@@ -389,6 +399,46 @@ class BenchmarkRunner:
         per_fold_df["cv_mode"] = mode
         per_fold_df.to_csv(RESULTS_DIR / f"cv_{mode}_per_fold.csv", index=False)
         self._print_cv_summary(per_fold_df, mode)
+
+        # Stitched OOS synth equity: pick the predictor with the best MEAN
+        # kappa across all folds, then concatenate ITS predictions over all
+        # fold test windows. Realistic: a single model deployed across the
+        # full OOS timeline (vs the per-fold-best which would require an
+        # oracle to know which model to use when).
+        if len(all_fold_preds) >= 2 and not per_fold_df.empty:
+            mean_kappa = per_fold_df.groupby("predictor")["kappa"].mean()
+            best_name = str(mean_kappa.idxmax())
+            best_mean = float(mean_kappa[best_name])
+            stitched_folds = []
+            for fp in all_fold_preds:
+                if best_name not in fp["predictions"]:
+                    continue
+                fold_kappa_row = per_fold_df[
+                    (per_fold_df["fold"] == fp["fold_id"])
+                    & (per_fold_df["predictor"] == best_name)
+                ]
+                fold_kappa = float(fold_kappa_row["kappa"].iloc[0]) if not fold_kappa_row.empty else float("nan")
+                stitched_folds.append({
+                    "fold_id": fp["fold_id"],
+                    "test_index": fp["test_index"],
+                    "predictions": fp["predictions"][best_name],
+                    "predictor_name": best_name,
+                    "kappa": fold_kappa,
+                })
+            try:
+                from ..visualization.regime_plots import plot_stitched_oos_equity
+                plot_stitched_oos_equity(
+                    df, stitched_folds,
+                    PLOTS_DIR / f"B_stitched_oos_{mode}.png",
+                    title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{best_name}-meanK{best_mean:+.3f}",
+                )
+                console.print(
+                    f"[dim]Stitched OOS plot: B_stitched_oos_{mode}.png "
+                    f"(best by mean κ: {best_name}, mean_κ={best_mean:+.3f}, {len(stitched_folds)} folds)[/dim]"
+                )
+            except Exception as e:
+                console.print(f"[yellow]Stitched plot failed: {e}[/yellow]")
+
         return per_fold_df
 
     def _print_cv_comparison(self, all_aggr: dict[str, pd.DataFrame]) -> None:
