@@ -1,0 +1,103 @@
+# =============================================================================
+# Trading signals battery — used by the framework to test which signals are
+# regime-predictive. Encoded in the same format as crypto_comparative_analysis
+# YAML configs (signal_type + direction + params).
+#
+# Each entry produces ONE binary feature column 0/1 per bar (signal triggered
+# or not). The framework's signal_analysis then computes lift + MI per column
+# and ranks them by regime-predictiveness.
+#
+# Coverage:
+#   - vwap_zscore: long + short × z ∈ {1.5, 2.0, 2.5}
+#   - rsi:         long oversold + short overbought
+#   - bb_extreme:  long + short
+#   - climax:      bull_climax (short signal) + bear_climax (long signal)
+#   - trend_weakening: long + short
+#
+# NOTE: signals that require external data (funding, ratio_btc/eth) are
+# excluded here — they're computed directly from the framework's
+# external features (funding zscore, target_cross_ratio, etc.).
+# =============================================================================
+
+
+technical_signals:
+  # ---- vwap_zscore — mean reversion ----
+  - name: "vwapz_long_z1_5"
+    signal_type: vwap_zscore
+    direction: long
+    params:
+      vwap_zscore_threshold: 1.5
+
+  - name: "vwapz_long_z2_0"
+    signal_type: vwap_zscore
+    direction: long
+    params:
+      vwap_zscore_threshold: 2.0
+
+  - name: "vwapz_long_z2_5"
+    signal_type: vwap_zscore
+    direction: long
+    params:
+      vwap_zscore_threshold: 2.5
+
+  - name: "vwapz_short_z1_5"
+    signal_type: vwap_zscore
+    direction: short
+    params:
+      vwap_zscore_threshold: 1.5
+
+  - name: "vwapz_short_z2_0"
+    signal_type: vwap_zscore
+    direction: short
+    params:
+      vwap_zscore_threshold: 2.0
+
+  - name: "vwapz_short_z2_5"
+    signal_type: vwap_zscore
+    direction: short
+    params:
+      vwap_zscore_threshold: 2.5
+
+  # ---- RSI extremes ----
+  - name: "rsi_oversold_30"
+    signal_type: rsi
+    direction: long
+    params:
+      rsi_long_threshold: 30
+
+  - name: "rsi_oversold_20"
+    signal_type: rsi
+    direction: long
+    params:
+      rsi_long_threshold: 20
+
+  - name: "rsi_overbought_70"
+    signal_type: rsi
+    direction: short
+    params:
+      rsi_short_threshold: 70
+
+  - name: "rsi_overbought_80"
+    signal_type: rsi
+    direction: short
+    params:
+      rsi_short_threshold: 80
+
+  # ---- Bear climax (capitulation = long opportunity) ----
+  - name: "bear_climax_long"
+    signal_type: bear_climax
+    direction: long
+
+  # ---- Bull climax (euphoria = short opportunity) ----
+  - name: "bull_climax_short"
+    signal_type: bull_climax
+    direction: short
+
+  # ---- Trend weakening (mean reversion both sides) ----
+  - name: "trendweak_long"
+    signal_type: trend_weakening
+    direction: long
+
+  - name: "trendweak_short"
+    signal_type: trend_weakening
+    direction: short

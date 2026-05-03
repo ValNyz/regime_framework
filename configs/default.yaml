@@ -29,8 +29,10 @@ label:
 features:
   use_technical: true
   use_external: true
-  use_trading_signals: false
-  trading_signals_yaml: null
+  use_trading_signals: true
+  # Path is resolved relative to the framework's configs/ dir if not absolute.
+  # Default: bundled battery (vwap_zscore + RSI + BB + climax + trend_weakening)
+  trading_signals_yaml: trading_signals_battery.yaml
   drop_nan_rows: true
 
 # --- Train/test split ---

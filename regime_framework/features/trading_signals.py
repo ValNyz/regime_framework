@@ -1,48 +1,22 @@
-"""Encode the user's trading signals as binary features for the regime classifier.
+"""Encode trading signals as binary 0/1 features for the regime classifier.
 
-For each SignalConfig in a YAML file, evaluate its entry condition on the OHLCV
-dataframe → produce a 0/1 column. The result is a feature matrix where each
-column is "is signal X currently triggered for direction D?" — usable both
-as inputs to a regime classifier and as standalone predictors (see
-signal_analysis/lift.py).
+Reads a YAML file listing signals (signal_type + direction + params), evaluates
+each on the OHLCV dataframe, and produces one binary column per signal.
 
-Lazy import of crypto_comparative_analysis if it's available — the framework
-falls back to a minimal in-house signal evaluator if not.
+Self-contained: no dependency on crypto_comparative_analysis. The user can
+optionally point to their CCA YAML files (same schema).
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-
-# Path to add to import the existing framework (where SignalConfig + entry_logic live)
-CCA_ROOT = Path("/home/nyzam/Documents/Valentin/crypto_comparative_analysis")
-
-
-def _import_cca():
-    """Lazy import of crypto_comparative_analysis modules."""
-    if str(CCA_ROOT) not in sys.path:
-        sys.path.insert(0, str(CCA_ROOT))
-    try:
-        from lib.signals.base import SignalConfig
-        from lib.signals.registry import load_signals_from_yaml
-        from lib.config.base import Config as CcaConfig
-        return SignalConfig, load_signals_from_yaml, CcaConfig
-    except ImportError as e:
-        print(f"  WARN: crypto_comparative_analysis not importable: {e}")
-        return None, None, None
+import yaml
 
 
 def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute the indicators referenced by signal conditions (RSI, BB, etc.).
-
-    Mirrors the canonical indicator block used by the CCA generator. Kept
-    minimal — only what's broadly used. If the user has signals that depend
-    on rarer indicators, this is the place to extend.
-    """
+    """Compute the indicators referenced by signal conditions (RSI, BB, VWAP, ATR, ADX)."""
     out = df.copy()
     close = out["close"]
     high = out["high"]
@@ -55,7 +29,7 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = gain / loss.replace(0, np.nan)
     out["rsi"] = 100 - 100 / (1 + rs)
 
-    # Bollinger Bands (20, 2)
+    # Bollinger Bands(20, 2)
     bb_ma = close.rolling(20).mean()
     bb_std = close.rolling(20).std()
     out["bb_upper"] = bb_ma + 2 * bb_std
@@ -67,7 +41,7 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["atr"] = tr.rolling(14).mean()
     out["atr_pct"] = out["atr"] / close
 
-    # ADX(14) — Wilder's smoothing approximated by EMA
+    # ADX(14)
     up = high.diff()
     dn = -low.diff()
     plus_dm = up.where((up > dn) & (up > 0), 0)
@@ -77,7 +51,7 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
     out["adx"] = dx.ewm(alpha=1 / 14, adjust=False).mean()
 
-    # VWAP rolling (24h) + zscore
+    # VWAP rolling 24h + zscore
     typical = (high + low + close) / 3
     vol = out["volume"] if "volume" in out.columns else pd.Series(1.0, index=out.index)
     cum_pv = (typical * vol).rolling(24, min_periods=1).sum()
@@ -93,24 +67,22 @@ def _attach_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["macd"] = macd_fast - macd_slow
     out["macd_signal"] = out["macd"].ewm(span=9, adjust=False).mean()
 
-    # EMAs commonly referenced
+    # EMAs
     for w in (20, 50, 200):
         out[f"ema_{w}"] = close.ewm(span=w, adjust=False).mean()
 
     return out
 
 
-def _eval_simple_signal(df: pd.DataFrame, signal_type: str, direction: str, params: dict) -> pd.Series:
-    """Minimal in-house evaluator for the most common signal types.
+def _eval_signal(df: pd.DataFrame, signal_type: str, direction: str, params: dict) -> pd.Series:
+    """Evaluate a signal definition into a 0/1 Series.
 
-    Supports: vwap_zscore, rsi, bb, ratio_btc_extreme (skipped if no BTC col),
-    funding (skipped — needs external data), bear_climax / bull_climax,
-    trend_weakening (rough proxy).
-
-    Returns a 0/1 Series indexed identically to df.
+    Supported signal_types:
+      vwap_zscore, rsi, bb_extreme, bull_climax, bear_climax, trend_weakening,
+      ema_cross, macd_cross
     """
     n = len(df)
-    out = pd.Series(0, index=df.index, dtype=int)
+    out = pd.Series(0, index=df.index, dtype=np.int8)
 
     if signal_type == "vwap_zscore":
         z = df["vwap_zscore"]
@@ -127,26 +99,53 @@ def _eval_simple_signal(df: pd.DataFrame, signal_type: str, direction: str, para
         elif direction == "short":
             out.loc[r > float(params.get("rsi_short_threshold", 70))] = 1
 
-    elif signal_type in ("bear_climax", "bull_climax"):
-        # Climax: extreme bar with reversal signature
-        # Approximation: a bar with abs(return) > 3*ATR% AND opposite direction follow-through
+    elif signal_type == "bb_extreme":
+        c = df["close"]
+        if direction == "long":
+            out.loc[c < df["bb_lower"]] = 1
+        elif direction == "short":
+            out.loc[c > df["bb_upper"]] = 1
+
+    elif signal_type == "bear_climax":
+        # Big down candle followed by reversal up
         ret = df["close"].pct_change()
         atrp = df.get("atr_pct", pd.Series(0.0, index=df.index))
-        if signal_type == "bear_climax":
-            cond = (ret < -3 * atrp) & (ret.shift(-1) > 0)
-        else:
-            cond = (ret > 3 * atrp) & (ret.shift(-1) < 0)
+        cond = (ret < -3 * atrp) & (ret.shift(-1) > 0)
+        out.loc[cond.fillna(False)] = 1
+
+    elif signal_type == "bull_climax":
+        ret = df["close"].pct_change()
+        atrp = df.get("atr_pct", pd.Series(0.0, index=df.index))
+        cond = (ret > 3 * atrp) & (ret.shift(-1) < 0)
         out.loc[cond.fillna(False)] = 1
 
     elif signal_type == "trend_weakening":
-        # Approximation: ADX falling for 5+ bars in a row
         adx = df.get("adx", pd.Series(0.0, index=df.index))
+        # ADX falling for 5+ consecutive bars
         falling = (adx.diff() < 0).rolling(5).sum() == 5
         out.loc[falling.fillna(False)] = 1
 
-    # Other types (ratio_btc_*, funding, ratio_eth_*, etc.) need extra data
-    # not present in df — skip and return zeros.
+    elif signal_type == "ema_cross":
+        fast = float(params.get("fast", 20))
+        slow = float(params.get("slow", 50))
+        ef = df["close"].ewm(span=fast, adjust=False).mean()
+        es = df["close"].ewm(span=slow, adjust=False).mean()
+        if direction == "long":
+            out.loc[(ef > es) & (ef.shift(1) <= es.shift(1))] = 1
+        elif direction == "short":
+            out.loc[(ef < es) & (ef.shift(1) >= es.shift(1))] = 1
 
+    elif signal_type == "macd_cross":
+        m = df["macd"]
+        s = df["macd_signal"]
+        if direction == "long":
+            out.loc[(m > s) & (m.shift(1) <= s.shift(1))] = 1
+        elif direction == "short":
+            out.loc[(m < s) & (m.shift(1) >= s.shift(1))] = 1
+
+    # Other types (funding, ratio_btc/eth_*) are intentionally skipped — those
+    # rely on external data that's already exposed via the external feature
+    # set (target_funding, target_cross_ratio, etc.).
     return out
 
 
@@ -154,43 +153,55 @@ def compute_trading_signal_features(
     df: pd.DataFrame,
     yaml_path: Path | None,
 ) -> pd.DataFrame:
-    """Compute one binary 0/1 feature per (signal name, direction) pair from a YAML file.
+    """Compute one binary 0/1 feature per (signal name, direction) from a YAML file.
 
-    If `crypto_comparative_analysis` is importable, signals are loaded via its
-    canonical loader (`load_signals_from_yaml`). Otherwise no features are
-    produced.
+    YAML format:
+        any_top_level_key:
+          - name: "my_signal"
+            signal_type: vwap_zscore
+            direction: long
+            params:
+              vwap_zscore_threshold: 2.0
 
     Args:
         df: OHLCV frame
-        yaml_path: path to user signals YAML
+        yaml_path: path to signals YAML (resolved by config.py)
 
     Returns:
-        DataFrame with columns named like `sig_<signal_name>_<direction>` taking
-        values in {0, 1}.
+        DataFrame with columns named like `sig_<signal_name>_<direction>`.
     """
-    if yaml_path is None or not yaml_path.exists():
+    if yaml_path is None or not Path(yaml_path).exists():
         return pd.DataFrame(index=df.index)
 
-    SignalConfig, load_signals_from_yaml, CcaConfig = _import_cca()
-    if load_signals_from_yaml is None:
-        return pd.DataFrame(index=df.index)
-
-    cca_cfg = CcaConfig(data_dir=str(df.attrs.get("data_dir", "/tmp")), strategies_dir="/tmp/_unused")
     try:
-        signals = load_signals_from_yaml(cca_cfg, str(yaml_path))
+        data = yaml.safe_load(Path(yaml_path).read_text())
     except Exception as e:
-        print(f"  WARN: load_signals_from_yaml failed: {e}")
+        print(f"  WARN: failed to parse {yaml_path}: {e}")
         return pd.DataFrame(index=df.index)
 
-    print(f"  trading_signals: loaded {len(signals)} signals from {yaml_path.name}")
     df_with_ind = _attach_indicators(df)
 
+    signal_entries = []
+    for group_name, entries in (data or {}).items():
+        if not isinstance(entries, list):
+            continue
+        for sig in entries:
+            if not sig.get("enabled", True):
+                continue
+            signal_entries.append(sig)
+
+    print(f"  trading_signals: {len(signal_entries)} signals from {Path(yaml_path).name}")
+
     out = pd.DataFrame(index=df.index)
-    for sig in signals:
-        col_name = f"sig_{sig.name}_{sig.direction}"
+    for sig in signal_entries:
+        name = sig.get("name", "unnamed")
+        direction = sig.get("direction", "long")
+        col_name = f"sig_{name}_{direction}"
         try:
-            col = _eval_simple_signal(df_with_ind, sig.signal_type, sig.direction, sig.params)
+            col = _eval_signal(df_with_ind, sig["signal_type"], direction, sig.get("params", {}) or {})
             out[col_name] = col.astype(np.int8)
+        except KeyError as e:
+            print(f"    WARN: {col_name} skipped (missing field: {e})")
         except Exception as e:
             print(f"    WARN: {col_name} skipped ({e})")
 

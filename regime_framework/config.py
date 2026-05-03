@@ -206,16 +206,22 @@ class RunConfig:
                 cross_name=paths_block.get("cross_name", "cross"),
                 external_dir=Path(paths_block["external_dir"]).expanduser() if paths_block.get("external_dir") else None,
             )
+        # Resolve trading_signals_yaml: if relative, resolve under CONFIG_DIR
+        feat_block = dict(data.get("features", {}))
+        ts_yaml = feat_block.get("trading_signals_yaml")
+        if ts_yaml:
+            p = Path(str(ts_yaml)).expanduser()
+            if not p.is_absolute():
+                p = CONFIG_DIR / p
+            feat_block["trading_signals_yaml"] = p
+
         return cls(
             target=data.get("target", "BTC"),
             venue=data.get("venue", "binance"),
             timeframe=data.get("timeframe", "1h"),
             paths=resolved_paths,
             label=LabelConfig(**data.get("label", {})),
-            features=FeatureConfig(
-                **{k: (Path(v).expanduser() if k == "trading_signals_yaml" and v else v)
-                   for k, v in data.get("features", {}).items()}
-            ),
+            features=FeatureConfig(**feat_block),
             split=SplitConfig(**data.get("split", {})),
             predictors=PredictorConfig(**data.get("predictors", {})),
             seed=data.get("seed", 42),
