@@ -71,6 +71,12 @@ def run(
         help="Rolling mode: slide step in bars. 0 = same as test window "
              "(non-overlapping consecutive tests).",
     ),
+    feature_importance: bool = typer.Option(
+        True, "--feature-importance/--no-feature-importance",
+        help="Compute + display feature importance for the best classical "
+             "predictor (per fold + end of CV). Disable to save runtime / "
+             "console noise when you only care about kappa / gain.",
+    ),
 ):
     """Run the full benchmark on a preset config."""
     # Support both repeated -f and comma-separated lists
@@ -106,6 +112,8 @@ def run(
         cfg.split.cv_folds = cv_folds
         cfg.split.cv_mode = cv_mode
         cfg.split.min_train_fraction = float(min_train_fraction)
+
+    cfg.predictors.feature_importance = bool(feature_importance)
 
     from .evaluation.runner import BenchmarkRunner
     runner = BenchmarkRunner(cfg)

@@ -319,16 +319,17 @@ class BenchmarkRunner:
                 )
             # Feature importance from the best CLASSICAL predictor with native
             # importance (skip NNs — permutation is too slow and not native).
-            classical_ranked = sorted(
-                [r for r in results
-                 if r.family == "classical" and not np.isnan(r.kappa)],
-                key=lambda r: r.kappa, reverse=True,
-            )
-            for r in classical_ranked:
-                cand = next((p for p in predictors if p.name == r.name), None)
-                if cand is not None and _has_native_importance(cand):
-                    self._print_and_save_importance(cand, X_te, y_te)
-                    break
+            if cfg.predictors.feature_importance:
+                classical_ranked = sorted(
+                    [r for r in results
+                     if r.family == "classical" and not np.isnan(r.kappa)],
+                    key=lambda r: r.kappa, reverse=True,
+                )
+                for r in classical_ranked:
+                    cand = next((p for p in predictors if p.name == r.name), None)
+                    if cand is not None and _has_native_importance(cand):
+                        self._print_and_save_importance(cand, X_te, y_te)
+                        break
 
         return {
             "results": [r.__dict__ for r in results],
@@ -644,19 +645,20 @@ class BenchmarkRunner:
 
                 # Per-fold feature importance: best classical predictor with
                 # native importance for THIS fold (skip NNs).
-                fold_classical = sorted(
-                    [r for r in fold_results
-                     if r.family == "classical" and not np.isnan(r.kappa)],
-                    key=lambda r: r.kappa, reverse=True,
-                )
-                for r in fold_classical:
-                    cand = next((p for p in predictors if p.name == r.name), None)
-                    if cand is not None and _has_native_importance(cand):
-                        self._print_and_save_importance(
-                            cand, X_te, y_te,
-                            suffix=f"{mode}_fold{fold_id+1}",
-                        )
-                        break
+                if cfg.predictors.feature_importance:
+                    fold_classical = sorted(
+                        [r for r in fold_results
+                         if r.family == "classical" and not np.isnan(r.kappa)],
+                        key=lambda r: r.kappa, reverse=True,
+                    )
+                    for r in fold_classical:
+                        cand = next((p for p in predictors if p.name == r.name), None)
+                        if cand is not None and _has_native_importance(cand):
+                            self._print_and_save_importance(
+                                cand, X_te, y_te,
+                                suffix=f"{mode}_fold{fold_id+1}",
+                            )
+                            break
 
         if not per_fold_rows:
             console.print("[red]No folds produced — check min_train_fraction / data length[/red]")
@@ -713,7 +715,11 @@ class BenchmarkRunner:
         # Feature importance for the best CLASSICAL predictor with native
         # importance (computed on the last fold's test set — that fold has
         # the largest train window in walk-forward). Skip NNs.
-        if last_fold_predictors is not None and last_fold_X_te is not None:
+        if (
+            cfg.predictors.feature_importance
+            and last_fold_predictors is not None
+            and last_fold_X_te is not None
+        ):
             classical_ranked = (
                 per_fold_df[per_fold_df["family"] == "classical"]
                 .groupby("predictor")["kappa"].mean()
