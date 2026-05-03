@@ -1,0 +1,43 @@
+# Preset: HYPE/USDC perp on Hyperliquid, 1h timeframe.
+# Smaller dataset (~12k bars since Dec 2024). Good for quick iteration.
+
+target: HYPE
+venue: hyperliquid
+timeframe: 1h
+
+paths:
+  ohlcv: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/hyperliquid/futures/HYPE_USDC_USDC-1h-futures.feather
+  funding: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/hyperliquid/futures/HYPE_USDC_USDC-1h-funding_rate.feather
+  cross_ohlcv: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/hyperliquid/futures/BTC_USDC_USDC-1h-futures.feather
+  cross_name: btc
+  external_dir: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/external
+
+label:
+  method: trend_scan
+  L_range: [72, 120, 168, 240, 336, 480, 720]
+  t_threshold: 0.0
+
+features:
+  use_technical: true
+  use_external: true
+  use_trading_signals: false
+
+split:
+  train_fraction: 0.80
+
+predictors:
+  families: [classical, rule_based, deep_nets, transformer, pretrained]
+  pretrained_models:
+    - chronos_bolt_base
+    - chronos_large
+    - timesfm
+    - moirai_large
+    - moirai_moe
+    - timemoe
+    - lag_llama
+    - toto
+  pretrained_modes: [zero_shot, fine_tuned]
+  fine_tune_head: logreg
+  forecast_horizon: 24
+
+seed: 42

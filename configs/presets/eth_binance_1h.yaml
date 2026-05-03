@@ -1,0 +1,42 @@
+# Preset: ETH/USDT perp on Binance, 1h timeframe.
+
+target: ETH
+venue: binance
+timeframe: 1h
+
+paths:
+  ohlcv: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/ETH_USDT_USDT-1h-futures.feather
+  funding: ~/.cache/regime_framework/eth_funding_placeholder.parquet  # disable if missing
+  cross_ohlcv: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/BTC_USDT_USDT-1h-futures.feather
+  cross_name: btc
+  external_dir: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/external
+
+label:
+  method: trend_scan
+  L_range: [72, 120, 168, 240, 336, 480, 720, 1080]
+  t_threshold: 0.0
+
+features:
+  use_technical: true
+  use_external: true
+  use_trading_signals: false
+
+split:
+  train_fraction: 0.80
+
+predictors:
+  families: [classical, rule_based, deep_nets, transformer, pretrained]
+  pretrained_models:
+    - chronos_bolt_base
+    - chronos_large
+    - timesfm
+    - moirai_large
+    - moirai_moe
+    - timemoe
+    - lag_llama
+    - toto
+  pretrained_modes: [zero_shot, fine_tuned]
+  fine_tune_head: logreg
+  forecast_horizon: 24
+
+seed: 42
