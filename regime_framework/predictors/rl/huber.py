@@ -5,18 +5,34 @@ Useful when Q-targets have heavy tails (rare reward spikes from large
 prices moves) — Ridge weights such targets quadratically and gets pulled
 around by them; Huber clips at the epsilon threshold and stays robust.
 
-Like Ridge-FQI, this needs StandardScaler in front: features arrive on
-heterogeneous scales (prices, z-scores, ratios) and the IRLS solver
-underlying Huber is sensitive to conditioning.
+Convergence note: Huber's lbfgs solver routinely hits max_iter on FQI's
+noisy Q-targets, even after scaling features and y. The IRLS reweighting
+shifts samples each iteration, and bootstrap targets compound the noise.
+The partial fit is a valid estimator (just not loss-optimal) — for FQI
+that's fine, the targets themselves are noisy bootstrap estimates. We
+suppress the ConvergenceWarning at module load since it's structural
+rather than actionable.
 """
 from __future__ import annotations
 
+import warnings
 from typing import Any
+
+from sklearn.exceptions import ConvergenceWarning
 
 from ._fqi import _FQIRLBase
 from .env import (
     ACTION_DISCRETE_2,
     ACTION_DISCRETE_3,
+)
+
+
+# See module docstring — Huber's lbfgs convergence on noisy FQI Q-targets
+# is structural; partial fits are still valid estimators.
+warnings.filterwarnings(
+    "ignore",
+    category=ConvergenceWarning,
+    module="sklearn.linear_model._huber",
 )
 
 

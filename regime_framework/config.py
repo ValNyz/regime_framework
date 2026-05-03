@@ -206,13 +206,13 @@ class RLConfig:
     ridge_gamma: float = 0.99
     ridge_iterations: int = 20
     huber_total_timesteps: int | None = None
-    huber_alpha: float = 1e-4
+    # Bumped alpha from sklearn's 1e-4 default: stronger L2 makes the loss
+    # strictly convex even when features are correlated, so lbfgs converges
+    # in fewer iterations. Trade-off is slightly more bias, fine for FQI.
+    huber_alpha: float = 1e-3
     huber_epsilon: float = 1.35
     huber_max_iter: int = 200          # lbfgs iterations (sklearn default)
-    huber_tol: float = 1e-3            # looser than sklearn 1e-5; with
-                                       # TransformedTargetRegressor scaling
-                                       # the y, lbfgs converges well before
-                                       # 200 iters at this tolerance
+    huber_tol: float = 1e-3            # looser than sklearn 1e-5
     huber_gamma: float = 0.99
     huber_iterations: int = 20
     histgb_total_timesteps: int | None = None
