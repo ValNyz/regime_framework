@@ -6,6 +6,8 @@ under leave_one_out / single-split because warm-starting would leak).
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import torch
@@ -17,6 +19,7 @@ from sklearn.ensemble import (
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.utils.data import DataLoader, TensorDataset
 
 from .base import BasePredictor
@@ -25,6 +28,19 @@ from ..config import LABEL_ORDER
 
 def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _reorder_proba_to_label_order(p: np.ndarray, src_classes: list) -> np.ndarray:
+    """Reorder a (n, k) probability matrix so its columns match LABEL_ORDER.
+    Used to align sklearn classifier outputs (which order columns by their
+    classes_ attribute, typically alphabetical) with the framework convention.
+    """
+    out = np.zeros((p.shape[0], len(LABEL_ORDER)), dtype=p.dtype)
+    for src_idx, cls in enumerate(src_classes):
+        if cls in LABEL_ORDER:
+            tgt_idx = LABEL_ORDER.index(cls)
+            out[:, tgt_idx] = p[:, src_idx]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +57,9 @@ class _SklearnBase(BasePredictor):
         self.is_finetune = self.finetune
         self.name = self.base_name + ("-FT" if self.finetune else "")
         self.scaler: StandardScaler | None = None
-        self.clf = None  # set by subclass
+        # `clf` is typed Any: subclasses assign different sklearn classifier
+        # types, no shared interface in the stubs.
+        self.clf: Any = None
         self._fitted = False
 
     # Public lifecycle: dispatches between cold and warm.
@@ -75,6 +93,19 @@ class _SklearnBase(BasePredictor):
         else:
             Xs = X_test.values
         return self.clf.predict(Xs)
+
+    def predict_proba(self, X_test, dates_test, df_test):
+        """Return probabilities reordered to LABEL_ORDER columns. None if the
+        underlying classifier doesn't expose predict_proba.
+        """
+        if not hasattr(self.clf, "predict_proba"):
+            return None
+        if self.needs_scaling and self.scaler is not None:
+            Xs = self.scaler.transform(X_test)
+        else:
+            Xs = X_test.values
+        p = self.clf.predict_proba(Xs)
+        return _reorder_proba_to_label_order(p, list(self.clf.classes_))
 
     def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
         """Native sklearn importances when available; else permutation fallback."""
@@ -110,6 +141,7 @@ class LogRegPredictor(_SklearnBase):
 
     def _warm_fit(self, X_train, y_train, dates_train, df_train):
         # warm_start=True on the SAGA solver picks up from prior coef_.
+        assert self.scaler is not None, "scaler should be fit on first cold call"
         Xs = self.scaler.fit_transform(X_train)  # rescale on new fold data
         self.clf.fit(Xs, y_train.values)
         return self
@@ -232,7 +264,7 @@ class MLPPredictor(BasePredictor):
     def _build_loader_and_weights(self, X_train, y_train):
         device = _device()
         self.scaler = StandardScaler()
-        Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
+        Xs = np.asarray(self.scaler.fit_transform(X_train.values), dtype=np.float32)
         cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
         y = np.array([cls_to_idx[v] for v in y_train.values], dtype=np.int64)
         cls_counts = np.array([(y == i).sum() for i in range(len(LABEL_ORDER))], dtype=np.float32)
@@ -246,10 +278,11 @@ class MLPPredictor(BasePredictor):
         return device, Xs, loader, weight
 
     def _train(self, loader, weight, device, lr: float, epochs: int, log_prefix: str):
+        assert self.model is not None, "_train called before model build"
         use_amp = device.type == "cuda"
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss(weight=weight)
-        amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
+        amp_scaler = GradScaler("cuda") if use_amp else None
         self.model.train()
         log_every = max(1, epochs // 4)
         for epoch in range(epochs):
@@ -257,7 +290,7 @@ class MLPPredictor(BasePredictor):
             for xb, yb in loader:
                 xb = xb.to(device); yb = yb.to(device)
                 optimizer.zero_grad()
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                with autocast("cuda", enabled=use_amp):
                     logits = self.model(xb)
                     loss = criterion(logits, yb)
                 if amp_scaler is not None:
@@ -285,15 +318,27 @@ class MLPPredictor(BasePredictor):
         return self
 
     def predict(self, X_test, dates_test, df_test):
+        assert self.scaler is not None and self.model is not None, "predict() called before fit()"
         device = _device()
         use_amp = device.type == "cuda"
-        Xs = self.scaler.transform(X_test.values).astype(np.float32)
+        Xs = np.asarray(self.scaler.transform(X_test.values), dtype=np.float32)
         idx_to_cls = {i: c for i, c in enumerate(LABEL_ORDER)}
         self.model.train(False)
-        with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
+        with torch.no_grad(), autocast("cuda", enabled=use_amp):
             logits = self.model(torch.from_numpy(Xs).to(device))
             pred = torch.argmax(logits, dim=1).cpu().numpy()
         return np.array([idx_to_cls[int(i)] for i in pred], dtype=object)
+
+    def predict_proba(self, X_test, dates_test, df_test):
+        assert self.scaler is not None and self.model is not None, "predict_proba() called before fit()"
+        device = _device()
+        use_amp = device.type == "cuda"
+        Xs = np.asarray(self.scaler.transform(X_test.values), dtype=np.float32)
+        self.model.train(False)
+        with torch.no_grad(), autocast("cuda", enabled=use_amp):
+            logits = self.model(torch.from_numpy(Xs).to(device))
+            proba = torch.softmax(logits.float(), dim=1).cpu().numpy()
+        return proba.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +358,7 @@ class _GBDTBase(BasePredictor):
         self.name = self.base_name + ("-FT" if self.finetune else "")
         self.cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
         self.idx_to_cls = {i: c for c, i in self.cls_to_idx.items()}
-        self.clf = None  # subclass instantiates
+        self.clf: Any = None  # subclass instantiates concrete XGB/LGB classifier
 
     def fit(self, X_train, y_train, dates_train, df_train):
         if self.finetune and self._has_prior_state():
@@ -326,6 +371,14 @@ class _GBDTBase(BasePredictor):
     def predict(self, X_test, dates_test, df_test):
         pred_int = self.clf.predict(X_test)
         return np.array([self.idx_to_cls[int(i)] for i in pred_int], dtype=object)
+
+    def predict_proba(self, X_test, dates_test, df_test):
+        """XGBoost/LightGBM return columns indexed by int class id, which by
+        construction matches LABEL_ORDER (we set cls_to_idx = enumerate(LABEL_ORDER)).
+        """
+        if not hasattr(self.clf, "predict_proba"):
+            return None
+        return np.asarray(self.clf.predict_proba(X_test), dtype=np.float32)
 
     def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
         if hasattr(self.clf, "feature_importances_"):

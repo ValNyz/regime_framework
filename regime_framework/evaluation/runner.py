@@ -29,6 +29,7 @@ from ..predictors.classical import (
 from ..predictors.rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
 from ..predictors.deep_nets import GRUPredictor, LSTMPredictor
 from ..predictors.transformer import TimeSeriesTransformerPredictor
+from ..predictors.ensemble import EnsemblePredictor
 from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
 from ..visualization.regime_plots import save_label_plots, save_prediction_plots
@@ -82,6 +83,8 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         _add(LSTMPredictor)
     if "transformer" in families:
         _add(TimeSeriesTransformerPredictor)
+    if "ensemble" in families:
+        _add(EnsemblePredictor)
     if "pretrained" in families:
         for model_name in cfg.predictors.pretrained_models:
             cls = PRETRAINED_REGISTRY.get(model_name)
@@ -295,30 +298,74 @@ class BenchmarkRunner:
     ) -> tuple[list[PredictionResult], dict[str, np.ndarray]]:
         results: list[PredictionResult] = []
         per_predictor_predictions: dict[str, np.ndarray] = {}
-        for predictor in predictors:
+        # Per-base predict_proba (n_test, n_classes); fed to ensemble predictors
+        # in the second pass.
+        per_predictor_probas: dict[str, np.ndarray] = {}
+
+        # Two-pass: base predictors first, then ensembles (which depend on
+        # base outputs). Maintain original predictor ordering otherwise.
+        base_predictors = [p for p in predictors if not getattr(p, "is_ensemble", False)]
+        ensemble_predictors = [p for p in predictors if getattr(p, "is_ensemble", False)]
+
+        def _evaluate(predictor, pred_arr, t0):
+            res = evaluate(
+                name=predictor.name,
+                family=predictor.family,
+                y_true=np.asarray(y_te.values),
+                y_pred=pred_arr,
+                metadata={"elapsed_sec": round(time.time() - t0, 2)},
+            )
+            results.append(res)
+            per_predictor_predictions[predictor.name] = pred_arr
+            console.print(
+                f"  [green]✔[/green] {predictor.name:35s} "
+                f"acc={res.accuracy:.3f} κ={res.kappa:+.3f} F1={res.f1_macro:.3f} "
+                f"({res.metadata['elapsed_sec']}s)"
+            )
+
+        # ---- Pass 1: base predictors (also try predict_proba for ensemble) ----
+        for predictor in base_predictors:
             with console.status(f"[bold green]{predictor.name}[/bold green]"):
                 t0 = time.time()
                 try:
                     predictor.fit(X_tr, y_tr, d_tr, df_tr)
-                    pred = predictor.predict(X_te, d_te, df_te)
-                    pred_arr = np.asarray(pred)
-                    res = evaluate(
-                        name=predictor.name,
-                        family=predictor.family,
-                        y_true=np.asarray(y_te.values),
-                        y_pred=pred_arr,
-                        metadata={"elapsed_sec": round(time.time() - t0, 2)},
-                    )
-                    results.append(res)
-                    per_predictor_predictions[predictor.name] = pred_arr
+                    pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
+                    _evaluate(predictor, pred_arr, t0)
+                    # Store proba for ensemble (base may return None if unsupported).
+                    try:
+                        proba = predictor.predict_proba(X_te, d_te, df_te)
+                        if proba is not None:
+                            per_predictor_probas[predictor.name] = np.asarray(proba)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    console.print(f"  [red]✘[/red] {predictor.name}: {e}")
+                    traceback.print_exc()
+
+        # ---- Pass 2: ensembles (fed with this fold's base probabilities) ----
+        for predictor in ensemble_predictors:
+            with console.status(f"[bold green]{predictor.name}[/bold green]"):
+                t0 = time.time()
+                try:
+                    predictor.feed_base_probas(per_predictor_probas)
+                    if not per_predictor_probas:
+                        console.print(
+                            f"  [yellow]⊘[/yellow] {predictor.name}: no base predict_proba "
+                            f"available — skipping"
+                        )
+                        continue
+                    predictor.fit(X_tr, y_tr, d_tr, df_tr)  # no-op
+                    pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
+                    _evaluate(predictor, pred_arr, t0)
+                    n_bases = len(per_predictor_probas)
                     console.print(
-                        f"  [green]✔[/green] {predictor.name:35s} "
-                        f"acc={res.accuracy:.3f} κ={res.kappa:+.3f} F1={res.f1_macro:.3f} "
-                        f"({res.metadata['elapsed_sec']}s)"
+                        f"      [dim]ensemble over {n_bases} base predictors: "
+                        f"{', '.join(per_predictor_probas.keys())}[/dim]"
                     )
                 except Exception as e:
                     console.print(f"  [red]✘[/red] {predictor.name}: {e}")
                     traceback.print_exc()
+
         return results, per_predictor_predictions
 
     def _run_cv(self, cfg, df, X, y, dates, purge: int) -> dict:
@@ -442,6 +489,16 @@ class BenchmarkRunner:
                     "test_end": str(d_te.iloc[-1].date()),
                     "baseline_acc": baseline_acc,
                 })
+
+            # Refresh FT ensembles' weights for the next fold — softmax of this
+            # fold's per-base kappas. Cold ensembles ignore this hook.
+            base_kappas = {
+                r.name: r.kappa for r in fold_results
+                if r.family != "ensemble" and not np.isnan(r.kappa)
+            }
+            for p in predictors:
+                if getattr(p, "is_ensemble", False):
+                    p.update_prior_kappas(base_kappas)
 
             # Save prediction plots for this fold's best predictor + multi overlay
             if fold_results:

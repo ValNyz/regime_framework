@@ -14,10 +14,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
+from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.utils.data import DataLoader, TensorDataset
 
 from .base import BasePredictor
@@ -157,11 +157,12 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         return device, Xs, loader, weight
 
     def _train(self, loader, weight, device, lr: float, epochs: int):
+        assert self.model is not None, "_train called before model build"
         use_amp = device.type == "cuda"
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
         criterion = nn.CrossEntropyLoss(weight=weight)
-        amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
+        amp_scaler = GradScaler("cuda") if use_amp else None
         self.model.train()
         log_every = max(1, epochs // 6)
         for epoch in range(epochs):
@@ -169,7 +170,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
             for xb, yb in loader:
                 xb = xb.to(device); yb = yb.to(device)
                 optimizer.zero_grad()
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                with autocast("cuda", enabled=use_amp):
                     logits = self.model(xb)
                     loss = criterion(logits, yb)
                 if amp_scaler is not None:
@@ -209,16 +210,17 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         return self
 
     def predict(self, X_test, dates_test, df_test):
+        assert self.scaler is not None and self.model is not None, "predict() called before fit()"
         device = _device()
         use_amp = device.type == "cuda"
-        Xs = self.scaler.transform(X_test.values).astype(np.float32)
+        Xs = np.asarray(self.scaler.transform(X_test.values), dtype=np.float32)
         idx_to_cls = {i: c for i, c in enumerate(LABEL_ORDER)}
         dummy_y = np.zeros(len(Xs), dtype=np.int64)
         seqs, _ = _make_sequences(Xs, dummy_y, self.seq_len)
 
         self.model.train(False)
         preds = []
-        with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
+        with torch.no_grad(), autocast("cuda", enabled=use_amp):
             # batched inference (seqs may be large)
             for i in range(0, len(seqs), self.batch_size):
                 batch = torch.from_numpy(seqs[i : i + self.batch_size].astype(np.float32)).to(device)
@@ -228,6 +230,29 @@ class TimeSeriesTransformerPredictor(BasePredictor):
 
         out = np.full(len(Xs), "", dtype=object)
         out[self.seq_len - 1:] = [idx_to_cls[int(i)] for i in pred_int]
+        if len(out) > self.seq_len - 1:
+            out[: self.seq_len - 1] = out[self.seq_len - 1]
+        return out
+
+    def predict_proba(self, X_test, dates_test, df_test):
+        assert self.scaler is not None and self.model is not None, "predict_proba() called before fit()"
+        device = _device()
+        use_amp = device.type == "cuda"
+        Xs = np.asarray(self.scaler.transform(X_test.values), dtype=np.float32)
+        dummy_y = np.zeros(len(Xs), dtype=np.int64)
+        seqs, _ = _make_sequences(Xs, dummy_y, self.seq_len)
+
+        self.model.train(False)
+        proba_chunks = []
+        with torch.no_grad(), autocast("cuda", enabled=use_amp):
+            for i in range(0, len(seqs), self.batch_size):
+                batch = torch.from_numpy(seqs[i : i + self.batch_size].astype(np.float32)).to(device)
+                logits = self.model(batch)
+                proba_chunks.append(torch.softmax(logits.float(), dim=1).cpu().numpy())
+        probas = np.concatenate(proba_chunks, axis=0)
+
+        out = np.zeros((len(Xs), len(LABEL_ORDER)), dtype=np.float32)
+        out[self.seq_len - 1:] = probas
         if len(out) > self.seq_len - 1:
             out[: self.seq_len - 1] = out[self.seq_len - 1]
         return out

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,22 @@ class BasePredictor(ABC):
         df_test: pd.DataFrame,
     ) -> np.ndarray:
         ...
+
+    def predict_proba(
+        self,
+        X_test: pd.DataFrame,    # noqa: ARG002 — kept for API parity
+        dates_test: pd.Series,   # noqa: ARG002
+        df_test: pd.DataFrame,   # noqa: ARG002
+    ) -> Any:
+        """Return per-class probabilities of shape (n_test, len(LABEL_ORDER)),
+        with columns ordered by LABEL_ORDER.
+
+        Default: None — meaning this predictor does not produce calibrated
+        probabilities (rule-based deterministic, pretrained zero-shot, etc).
+        Used by EnsemblePredictor to soft-vote across base predictors; if a
+        predictor returns None it is automatically excluded from the ensemble.
+        """
+        return None
 
     def feature_importances(
         self,

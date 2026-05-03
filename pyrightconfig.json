@@ -1,0 +1,15 @@
+{
+  "include": ["regime_framework"],
+  "extraPaths": ["."],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportPrivateImportUsage": "none",
+  "reportArgumentType": "none",
+  "reportCallIssue": "none",
+  "reportIndexIssue": "none",
+  "reportUnusedParameter": "none",
+  "reportUnusedVariable": "none",
+  "reportOptionalMemberAccess": "warning",
+  "useLibraryCodeForTypes": true
+}

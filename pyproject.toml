@@ -49,3 +49,16 @@ regime-run = "regime_framework.cli:main"
 [tool.setuptools.packages.find]
 include = ["regime_framework*"]
 exclude = ["tests*", "scripts*"]
+
+[tool.pyright]
+include = ["regime_framework"]
+extraPaths = ["."]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportPrivateImportUsage = "none"
+reportArgumentType = "none"
+reportCallIssue = "none"
+reportIndexIssue = "none"
+reportAttributeAccessIssue = "warning"
+useLibraryCodeForTypes = true

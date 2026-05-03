@@ -137,7 +137,7 @@ class TrainingConfig:
 @dataclass
 class PredictorConfig:
     families: list[str] = field(default_factory=lambda: [
-        "classical", "rule_based", "deep_nets", "transformer", "pretrained"
+        "classical", "rule_based", "deep_nets", "transformer", "pretrained", "ensemble"
     ])
     pretrained_models: list[str] = field(default_factory=lambda: [
         "chronos_bolt_base",
