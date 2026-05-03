@@ -81,7 +81,14 @@ class _TST(nn.Module):
             dropout=dropout, batch_first=True, activation="gelu",
             norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        # enable_nested_tensor=False: the nested-tensor fast path is not
+        # compatible with norm_first=True (pre-LN), so torch emits a warning
+        # at construction. We use pre-LN intentionally (more stable gradients);
+        # explicitly disabling the option silences the warning without changing
+        # behavior — it would have been disabled internally anyway.
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=n_layers, enable_nested_tensor=False,
+        )
         self.pool = _AttentionPool(d_model)
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(d_model, n_classes))
 
