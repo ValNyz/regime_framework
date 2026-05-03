@@ -164,7 +164,6 @@ class RLConfig:
     transaction_cost: float = 0.0      # 0 = no penalty. Example: 0.001 = 10 bps per flip.
     flat_threshold: float = 0.05       # continuous action → flat if |action| < this
     ft_steps_scale: float = 0.5        # FT mode: total_timesteps × this
-    seed: int = 42
     # Action-space variants to instantiate (omit any to skip those predictors)
     action_spaces: list[str] = field(default_factory=lambda: [
         "discrete-2", "discrete-3", "continuous"

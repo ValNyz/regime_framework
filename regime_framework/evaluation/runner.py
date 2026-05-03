@@ -114,7 +114,7 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             flat_threshold=rl_cfg.flat_threshold,
             total_timesteps=rl_cfg.total_timesteps,
             ft_steps_scale=rl_cfg.ft_steps_scale,
-            seed=rl_cfg.seed,
+            seed=cfg.seed,  # use the global seed (top-level seed: in YAML)
         )
         # Map action_space → list of (cls, approximator-specific kwargs)
         rl_classes = {
