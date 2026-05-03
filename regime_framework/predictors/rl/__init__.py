@@ -48,9 +48,6 @@ from .lgb import LGBQ2Predictor, LGBQ3Predictor
 from .xgb import XGBQ2Predictor, XGBQ3Predictor
 from .rf import RFQ2Predictor, RFQ3Predictor
 from .ridge import RidgeQ2Predictor, RidgeQ3Predictor
-from .huber import HuberQ2Predictor, HuberQ3Predictor
-from .histgb import HistGBQ2Predictor, HistGBQ3Predictor
-from .cat import CatQ2Predictor, CatQ3Predictor
 
 
 __all__ = [
@@ -75,10 +72,4 @@ __all__ = [
     "RFQ3Predictor",
     "RidgeQ2Predictor",
     "RidgeQ3Predictor",
-    "HuberQ2Predictor",
-    "HuberQ3Predictor",
-    "HistGBQ2Predictor",
-    "HistGBQ3Predictor",
-    "CatQ2Predictor",
-    "CatQ3Predictor",
 ]
