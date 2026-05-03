@@ -817,6 +817,7 @@ class BenchmarkRunner:
             acc_mean=("accuracy", "mean"),
             f1_mean=("f1_macro", "mean"),
             gain_mean=("synth_gain", "mean"),
+            gain_std=("synth_gain", "std"),
             gain_total=("synth_gain", _compound),
             n_folds=("fold", "count"),
         ).reset_index().sort_values("kappa_mean", ascending=False)
@@ -832,19 +833,22 @@ class BenchmarkRunner:
         agg["cv_mode"] = mode
         agg.to_csv(RESULTS_DIR / f"cv_{mode}_aggregated.csv", index=False)
 
+        bh_std = float(bh_per_fold.std()) if len(bh_per_fold) > 1 else float("nan")
         title = f"{mode.replace('_', '-')} aggregate — sorted by mean κ (B&H total = {bh_total*100:+.1f}%)"
         table = Table(title=title)
         for col in (
             "predictor", "family", "κ_mean", "κ_std", "acc", "F1",
-            "gain_mean", "gain_total", "vs_BH", "n_folds",
+            "gain_mean", "gain_std", "gain_total", "vs_BH", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
 
         # B&H reference row at the top.
+        bh_std_str = f"[dim]{bh_std*100:.1f}%[/dim]" if not np.isnan(bh_std) else "[dim]--[/dim]"
         table.add_row(
             "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
             "--", "--", "--", "--",
             f"[dim]{bh_mean*100:+.1f}%[/dim]",
+            bh_std_str,
             f"[dim]{bh_total*100:+.1f}%[/dim]",
             "[dim]0.0%[/dim]",
             f"[dim]{int(len(bh_per_fold))}[/dim]",
@@ -863,11 +867,14 @@ class BenchmarkRunner:
             gain_total = float(r["gain_total"])
             vs_bh = float(r["gain_vs_bh"])
             vs_bh_color = "green" if vs_bh > 0 else "red"
+            gstd = float(r["gain_std"]) if not pd.isna(r["gain_std"]) else float("nan")
+            gstd_str = f"{gstd*100:.1f}%" if not np.isnan(gstd) else "--"
             table.add_row(
                 str(r["predictor"]), str(r["family"]),
                 kstr, f"{r['kappa_std']:.3f}",
                 f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}",
                 f"{r['gain_mean']*100:+.1f}%",
+                gstd_str,
                 f"{gain_total*100:+.1f}%",
                 f"[{vs_bh_color}]{vs_bh*100:+.1f}%[/{vs_bh_color}]",
                 str(int(r["n_folds"])),

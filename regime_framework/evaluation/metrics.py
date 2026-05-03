@@ -136,7 +136,14 @@ def evaluate(
         )
 
     acc = float(accuracy_score(y_true_f, y_pred_f))
-    kappa = float(cohen_kappa_score(y_true_f, y_pred_f))
+    # Cohen's kappa is undefined when only one class is observed (formula
+    # divides 0 by 0 — sklearn warns and returns NaN). Detect that explicitly
+    # so the warning doesn't fire and downstream tables show NaN cleanly.
+    observed_classes = np.unique(np.concatenate([y_true_f, y_pred_f]))
+    if len(observed_classes) <= 1:
+        kappa = float("nan")
+    else:
+        kappa = float(cohen_kappa_score(y_true_f, y_pred_f, labels=LABEL_ORDER))
     f1m = float(f1_score(y_true_f, y_pred_f, labels=LABEL_ORDER, average="macro", zero_division=0))
     cm = confusion_matrix(y_true_f, y_pred_f, labels=LABEL_ORDER).tolist()
 
