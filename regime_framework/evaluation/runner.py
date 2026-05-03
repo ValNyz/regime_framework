@@ -310,7 +310,6 @@ class BenchmarkRunner:
                     "test_end": str(d_te.iloc[-1].date()),
                     "baseline_acc": baseline_acc,
                 })
-                all_results_aggr.setdefault(r.name, []).append(r)
 
         if not per_fold_rows:
             console.print("[red]No folds produced — check min_train_fraction / data length[/red]")
