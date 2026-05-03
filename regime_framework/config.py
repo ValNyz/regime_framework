@@ -205,6 +205,27 @@ class RLConfig:
     ridge_alpha: float = 1.0             # L2 regularization strength
     ridge_gamma: float = 0.99
     ridge_iterations: int = 20
+    huber_total_timesteps: int | None = None
+    huber_alpha: float = 1e-4
+    huber_epsilon: float = 1.35
+    huber_max_iter: int = 200
+    huber_gamma: float = 0.99
+    huber_iterations: int = 20
+    histgb_total_timesteps: int | None = None
+    histgb_max_iter: int = 200
+    histgb_max_depth: int = 6
+    histgb_learning_rate: float = 0.05
+    histgb_min_samples_leaf: int = 20
+    histgb_l2_regularization: float = 0.0
+    histgb_gamma: float = 0.99
+    histgb_iterations: int = 20
+    cat_total_timesteps: int | None = None
+    cat_n_estimators: int = 200
+    cat_max_depth: int = 6
+    cat_learning_rate: float = 0.05
+    cat_l2_leaf_reg: float = 3.0
+    cat_gamma: float = 0.99
+    cat_iterations: int = 20
 
 
 def _extract_predictor_kwargs(d: dict) -> dict:
