@@ -28,12 +28,13 @@ console = Console()
 @app.command()
 def run(
     preset: str = typer.Argument(..., help="Preset name (e.g. btc_binance_1h)"),
-    families: list[str] = typer.Option(
-        ["classical", "rule_based", "deep_nets", "transformer", "pretrained"],
+    families: list[str] | None = typer.Option(
+        None,
         "--family", "-f",
         help="Predictor families: classical, rule_based, deep_nets, transformer, "
              "pretrained, rl. Accepts repeated flags (-f classical -f rl) OR "
-             "comma-separated (-f classical,rl).",
+             "comma-separated (-f classical,rl). When unset, the preset's "
+             "predictors.families wins (CLI overrides preset only if -f passed).",
     ),
     pretrained: list[str] | None = typer.Option(
         None, "--pretrained", "-p",
@@ -102,19 +103,19 @@ def run(
     ),
 ):
     """Run the full benchmark on a preset config."""
-    # Support both repeated -f and comma-separated lists
-    flat_families: list[str] = []
-    for f in families:
-        flat_families.extend([x.strip() for x in str(f).split(",") if x.strip()])
-    valid = {"classical", "rule_based", "deep_nets", "transformer", "pretrained", "rl"}
-    bad = [f for f in flat_families if f not in valid]
-    if bad:
-        raise typer.BadParameter(
-            f"Unknown family/families: {bad}. Valid: {sorted(valid)}"
-        )
-
     cfg = RunConfig.from_preset(preset)
-    cfg.predictors.families = flat_families
+    # CLI families override preset only when -f explicitly passed.
+    if families:
+        flat_families: list[str] = []
+        for f in families:
+            flat_families.extend([x.strip() for x in str(f).split(",") if x.strip()])
+        valid = {"classical", "rule_based", "deep_nets", "transformer", "pretrained", "rl"}
+        bad = [f for f in flat_families if f not in valid]
+        if bad:
+            raise typer.BadParameter(
+                f"Unknown family/families: {bad}. Valid: {sorted(valid)}"
+            )
+        cfg.predictors.families = flat_families
     if skip_pretrained and "pretrained" in cfg.predictors.families:
         cfg.predictors.families.remove("pretrained")
     if pretrained:
