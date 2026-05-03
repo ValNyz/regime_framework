@@ -39,6 +39,7 @@ from .env import (
 from .base import RLBasePredictor
 from .nn import DQN2Predictor, DQN3Predictor, SACPredictor
 from .linear import LinearQ2Predictor, LinearQ3Predictor
+from .lgb import LGBQ2Predictor, LGBQ3Predictor
 
 
 __all__ = [
@@ -55,4 +56,6 @@ __all__ = [
     "SACPredictor",
     "LinearQ2Predictor",
     "LinearQ3Predictor",
+    "LGBQ2Predictor",
+    "LGBQ3Predictor",
 ]
