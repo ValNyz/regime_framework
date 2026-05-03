@@ -30,8 +30,32 @@ framework:
 
 ```bash
 pip install -e .
-python scripts/run_full_comparison.py --preset btc_binance_1h
+# Edit configs/presets/btc_binance_1h.yaml: set `data_root: /path/to/your/data`
+regime-run run btc_binance_1h
 ```
+
+## Data layout (auto-resolved from `data_root`)
+
+```
+{data_root}/
+├── binance/futures/
+│   ├── BTC_USDT_USDT-1h-futures.feather
+│   ├── BTC_USDT_USDT-1h-funding_rate.feather
+│   ├── ETH_USDT_USDT-1h-futures.feather
+│   └── ...
+├── hyperliquid/futures/
+│   ├── HYPE_USDC_USDC-1h-futures.feather
+│   ├── HYPE_USDC_USDC-1h-funding_rate.feather
+│   └── ...
+└── external/
+    ├── binance_funding_BTCUSDT.parquet
+    ├── etf_flows_btc.parquet
+    ├── fng_daily.parquet
+    ├── yfinance_DXY.parquet
+    └── yfinance_VIX.parquet
+```
+
+A preset only specifies `target`, `venue`, `quote`, `settle`, `timeframe`, `data_root` — the framework derives all 4 file paths automatically. Override individual paths via the `paths:` block if your layout differs.
 
 ## Layout
 

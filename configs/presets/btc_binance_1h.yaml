@@ -1,16 +1,23 @@
-# Preset: BTC/USDT perp on Binance, 1h timeframe.
-# Largest dataset available (~58k bars, 6+ years).
+# Preset: BTC/USDT perp on Binance, 1h. Largest dataset (~58k bars, 6+ years).
+#
+# Paths are auto-resolved from data_root using the canonical layout:
+#   {data_root}/binance/futures/BTC_USDT_USDT-1h-futures.feather
+#   {data_root}/binance/futures/BTC_USDT_USDT-1h-funding_rate.feather
+#   {data_root}/binance/futures/ETH_USDT_USDT-1h-futures.feather   (cross-asset)
+#   {data_root}/external/                                           (FNG, ETF, DXY, VIX)
 
 target: BTC
 venue: binance
+quote: USDT
+settle: USDT
 timeframe: 1h
 
-paths:
-  ohlcv: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/BTC_USDT_USDT-1h-futures.feather
-  funding: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/BTC_USDT_USDT-1h-funding_rate.feather
-  cross_ohlcv: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/ETH_USDT_USDT-1h-futures.feather
-  cross_name: eth
-  external_dir: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/external
+# Single root containing all data — override per machine.
+data_root: ~/regime_data
+
+# Optional cross-asset override (default auto-resolves to ETH for BTC target)
+# cross:
+#   target: SOL
 
 label:
   method: trend_scan
@@ -24,7 +31,6 @@ features:
 
 split:
   train_fraction: 0.80
-  # purge_bars: omitted → defaults to max(L_range) = 1080
 
 predictors:
   families: [classical, rule_based, deep_nets, transformer, pretrained]

@@ -1,15 +1,13 @@
-# Preset: ETH/USDT perp on Binance, 1h timeframe.
+# Preset: ETH/USDT perp on Binance, 1h.
 
 target: ETH
 venue: binance
+quote: USDT
+settle: USDT
 timeframe: 1h
 
-paths:
-  ohlcv: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/ETH_USDT_USDT-1h-futures.feather
-  funding: ~/.cache/regime_framework/eth_funding_placeholder.parquet  # disable if missing
-  cross_ohlcv: /home/nyzam/Documents/Valentin/crypto_comparative_analysis/user_data/data/binance/futures/BTC_USDT_USDT-1h-futures.feather
-  cross_name: btc
-  external_dir: /home/nyzam/Documents/Valentin/hyperliquid_data/user_data/data/external
+data_root: ~/regime_data
+# cross auto-resolves to BTC for ETH target
 
 label:
   method: trend_scan

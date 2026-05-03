@@ -22,12 +22,48 @@ PLOTS_DIR = REPO_ROOT / "plots"
 
 @dataclass
 class DataPaths:
-    """Filesystem paths used by data loaders."""
+    """Filesystem paths used by data loaders.
+
+    Two ways to populate this:
+      1. Explicit paths (each field set manually)
+      2. Auto-resolved from a DataRoot — set `data_root` + venue/asset fields
+         in the YAML and the resolver fills the rest.
+    """
     ohlcv: Path
     funding: Path | None = None
-    cross_ohlcv: Path | None = None      # cross-asset reference (e.g. ETH when target=BTC)
+    cross_ohlcv: Path | None = None
     cross_name: str = "cross"
-    external_dir: Path | None = None     # FNG, ETF, DXY, VIX, BTC funding
+    external_dir: Path | None = None
+
+    @classmethod
+    def from_data_root(
+        cls,
+        data_root: str | Path,
+        venue: str,
+        target: str,
+        quote: str,
+        settle: str,
+        timeframe: str,
+        cross_target: str | None = None,
+        cross_quote: str | None = None,
+        cross_settle: str | None = None,
+    ) -> "DataPaths":
+        from .data.conventions import DataRoot
+        root = DataRoot(
+            data_root=Path(data_root).expanduser(),
+            venue=venue, target=target, quote=quote, settle=settle,
+            timeframe=timeframe,
+            cross_target=cross_target,
+            cross_quote=cross_quote,
+            cross_settle=cross_settle,
+        )
+        return cls(
+            ohlcv=root.ohlcv(),
+            funding=root.funding(),
+            cross_ohlcv=root.cross_ohlcv(),
+            cross_name=root.cross_name(),
+            external_dir=root.external_dir(),
+        )
 
 
 @dataclass
@@ -98,15 +134,42 @@ class RunConfig:
     @classmethod
     def from_yaml(cls, path: Path) -> "RunConfig":
         data = yaml.safe_load(path.read_text())
-        # Resolve ~ and relative paths
-        paths = data.get("paths", {})
-        resolved_paths = DataPaths(
-            ohlcv=Path(paths["ohlcv"]).expanduser(),
-            funding=Path(paths["funding"]).expanduser() if paths.get("funding") else None,
-            cross_ohlcv=Path(paths["cross_ohlcv"]).expanduser() if paths.get("cross_ohlcv") else None,
-            cross_name=paths.get("cross_name", "cross"),
-            external_dir=Path(paths["external_dir"]).expanduser() if paths.get("external_dir") else None,
-        )
+        target = data.get("target", "BTC")
+        venue = data.get("venue", "binance")
+        timeframe = data.get("timeframe", "1h")
+
+        # Two ways to specify paths in the YAML:
+        #   (a) "data_root" + asset/venue fields → auto-resolve via DataRoot conventions
+        #   (b) "paths" with explicit fields → use as-is (override)
+        paths_block = data.get("paths", {})
+        data_root = data.get("data_root")
+
+        if data_root and not paths_block:
+            cross = data.get("cross", {}) or {}
+            resolved_paths = DataPaths.from_data_root(
+                data_root=data_root,
+                venue=venue,
+                target=target,
+                quote=data.get("quote", "USDT"),
+                settle=data.get("settle", data.get("quote", "USDT")),
+                timeframe=timeframe,
+                cross_target=cross.get("target"),
+                cross_quote=cross.get("quote"),
+                cross_settle=cross.get("settle"),
+            )
+        else:
+            # Explicit paths block (legacy / override mode)
+            if not paths_block:
+                raise ValueError(
+                    f"{path}: must provide either `data_root:` (auto-resolve) or `paths:` (explicit)."
+                )
+            resolved_paths = DataPaths(
+                ohlcv=Path(paths_block["ohlcv"]).expanduser(),
+                funding=Path(paths_block["funding"]).expanduser() if paths_block.get("funding") else None,
+                cross_ohlcv=Path(paths_block["cross_ohlcv"]).expanduser() if paths_block.get("cross_ohlcv") else None,
+                cross_name=paths_block.get("cross_name", "cross"),
+                external_dir=Path(paths_block["external_dir"]).expanduser() if paths_block.get("external_dir") else None,
+            )
         return cls(
             target=data.get("target", "BTC"),
             venue=data.get("venue", "binance"),
