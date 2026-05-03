@@ -189,6 +189,14 @@ class PredictorConfig:
     # cleaner console output / faster runs (no permutation fallback overhead
     # on the rare classical predictor that lacks native importance).
     feature_importance: bool = True
+    # Criterion used to sort the CV aggregate table and to select the
+    # "best predictor" for the stitched OOS plot. One of:
+    #   "kappa"  — Cohen's κ (default; classification skill)
+    #   "gain"   — gain_total (compounded synth_gain across folds)
+    #   "vs_bh"  — gain_total minus B&H gain (excess over buy-and-hold)
+    # Useful when κ and gain disagree (common in strongly-directional markets
+    # where "always long" beats κ-skilled predictors on synth_gain).
+    rank_by: str = "kappa"
 
 
 @dataclass

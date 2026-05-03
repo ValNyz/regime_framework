@@ -92,6 +92,14 @@ def run(
              "(label, stitched OOS) but drops the per-fold ones — useful "
              "when running with 50+ rolling folds.",
     ),
+    rank_by: str = typer.Option(
+        None, "--rank-by",
+        help="Sort the CV summary table and pick the 'best' predictor for "
+             "the stitched OOS plot by: 'kappa' (default — classification "
+             "skill), 'gain' (compounded synth_gain across folds), or "
+             "'vs_bh' (gain_total minus B&H). Use 'gain' or 'vs_bh' when "
+             "you care about money rather than per-bar agreement.",
+    ),
 ):
     """Run the full benchmark on a preset config."""
     # Support both repeated -f and comma-separated lists
@@ -135,6 +143,12 @@ def run(
         cfg.plots.enabled = bool(plots)
     if fold_plots is not None:
         cfg.plots.per_fold = bool(fold_plots)
+    if rank_by is not None:
+        if rank_by not in ("kappa", "gain", "vs_bh"):
+            raise typer.BadParameter(
+                f"--rank-by must be one of: kappa, gain, vs_bh (got {rank_by!r})"
+            )
+        cfg.predictors.rank_by = rank_by
 
     from .evaluation.runner import BenchmarkRunner
     runner = BenchmarkRunner(cfg)

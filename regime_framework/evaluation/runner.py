@@ -720,9 +720,23 @@ class BenchmarkRunner:
         # Stitched OOS plot is a once-per-CV summary, gated only by the
         # master 'enabled' flag (NOT per_fold — it survives --no-fold-plots).
         if cfg.plots.enabled and len(all_fold_preds) >= 2 and not per_fold_df.empty:
-            mean_kappa = per_fold_df.groupby("predictor")["kappa"].mean()
-            best_name = str(mean_kappa.idxmax())
-            best_mean = float(mean_kappa[best_name])
+            # Pick the global best predictor by the user's ranking criterion.
+            rank_by = getattr(cfg.predictors, "rank_by", "kappa")
+            if rank_by == "gain":
+                # Compound synth_gain across folds, pick the predictor with the
+                # highest compounded total (= what survives if you traded it).
+                ranking = per_fold_df.groupby("predictor")["synth_gain"].apply(
+                    lambda s: float(np.prod(1.0 + s.dropna().values) - 1.0)
+                )
+            elif rank_by == "vs_bh":
+                # Same as gain but offset by B&H total (constant across preds).
+                ranking = per_fold_df.groupby("predictor")["synth_gain"].apply(
+                    lambda s: float(np.prod(1.0 + s.dropna().values) - 1.0)
+                )
+            else:
+                ranking = per_fold_df.groupby("predictor")["kappa"].mean()
+            best_name = str(ranking.idxmax())
+            best_mean = float(ranking[best_name])
             stitched_folds = []
             for fp in all_fold_preds:
                 if best_name not in fp["predictions"]:
@@ -744,11 +758,12 @@ class BenchmarkRunner:
                 plot_stitched_oos_equity(
                     df, stitched_folds,
                     PLOTS_DIR / f"B_stitched_oos_{mode}.png",
-                    title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{best_name}-meanK{best_mean:+.3f}",
+                    title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{best_name}-{rank_by}{best_mean:+.3f}",
                 )
+                rank_str = {"kappa": "mean κ", "gain": "gain_total", "vs_bh": "vs_BH"}.get(rank_by, "mean κ")
                 console.print(
                     f"[dim]Stitched OOS plot: B_stitched_oos_{mode}.png "
-                    f"(best by mean κ: {best_name}, mean_κ={best_mean:+.3f}, {len(stitched_folds)} folds)[/dim]"
+                    f"(best by {rank_str}: {best_name}={best_mean:+.3f}, {len(stitched_folds)} folds)[/dim]"
                 )
             except Exception as e:
                 console.print(f"[yellow]Stitched plot failed: {e}[/yellow]")
@@ -837,7 +852,7 @@ class BenchmarkRunner:
             gain_std=("synth_gain", "std"),
             gain_total=("synth_gain", _compound),
             n_folds=("fold", "count"),
-        ).reset_index().sort_values("kappa_mean", ascending=False)
+        ).reset_index()
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
         bh_per_fold = per_fold.drop_duplicates("fold").set_index("fold").get(
@@ -848,10 +863,25 @@ class BenchmarkRunner:
 
         agg["gain_vs_bh"] = agg["gain_total"] - bh_total
         agg["cv_mode"] = mode
+
+        # Sort by user-chosen criterion. Gain / vs_BH ranks differently from
+        # κ when predictors are right on high-magnitude bars but noisy on
+        # low-magnitude bars (common in strongly-directional markets).
+        rank_by = getattr(cfg.predictors, "rank_by", "kappa")
+        sort_col = {
+            "kappa": "kappa_mean",
+            "gain": "gain_total",
+            "vs_bh": "gain_vs_bh",
+        }.get(rank_by, "kappa_mean")
+        agg = agg.sort_values(sort_col, ascending=False)
+
         agg.to_csv(RESULTS_DIR / f"cv_{mode}_aggregated.csv", index=False)
 
         bh_std = float(bh_per_fold.std()) if len(bh_per_fold) > 1 else float("nan")
-        title = f"{mode.replace('_', '-')} aggregate — sorted by mean κ (B&H total = {bh_total*100:+.1f}%)"
+        rank_label = {
+            "kappa": "mean κ", "gain": "gain_total", "vs_bh": "vs_BH",
+        }.get(rank_by, "mean κ")
+        title = f"{mode.replace('_', '-')} aggregate — sorted by {rank_label} (B&H total = {bh_total*100:+.1f}%)"
         table = Table(title=title)
         for col in (
             "predictor", "family", "κ_mean", "κ_std", "acc", "F1",
