@@ -1244,9 +1244,12 @@ class BenchmarkRunner:
         out_dir = PLOTS_DIR
         split_dt = d_te.iloc[0]
         try:
-            _plot_A(df, runs, out_dir / f"A_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
+            # Pass labels=out (only test bars are non-empty) → auto-zoom to fold.
+            _plot_A(df, runs, out_dir / f"A_pred_{mode}_fold{fold_id+1}.png", suffix,
+                    split_dt, labels=out)
             # _plot_B takes (raw_labels, smooth, runs) — raw drives the equity
             # curve (matches synth_gain metric), smooth drives the regime bands.
+            # Auto-zoom triggered by `out` being sparse (empty in train, set in fold's test).
             _plot_B(df, out, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
             console.print(
                 f"      [dim]plots saved: A/B_pred_{mode}_fold{fold_id+1}.png "

@@ -71,12 +71,55 @@ def _legend_handles() -> list:
     return [mpatches.Patch(color=LABEL_COLORS[l], label=l, alpha=0.7) for l in LABEL_ORDER if l in LABEL_COLORS]
 
 
-def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None) -> None:
+def _detect_label_span(labels) -> tuple[int, int] | None:
+    """Find first and last bar indices where a label is non-empty.
+
+    Used by plots to auto-zoom on the prediction window: if predictions
+    cover only the test slice (typical for prediction plots), the rest of
+    the timeline shows empty labels and gets cropped out. For label plots
+    (full-history labels), every bar is non-empty so this returns the full
+    range — effectively a no-op zoom.
+    """
+    if labels is None:
+        return None
+    arr = np.asarray(labels)
+    if arr.size == 0:
+        return None
+    mask = arr != ""
+    if not mask.any():
+        return None
+    nz = np.where(mask)[0]
+    return int(nz[0]), int(nz[-1])
+
+
+def _maybe_zoom(ax, dates, labels, padding_bars: int = 0) -> None:
+    """If `labels` covers a strict subset of `dates`, restrict ax xlim to it.
+    Use `padding_bars` to add a small left buffer (e.g. show some training
+    context before the test split).
+    """
+    span = _detect_label_span(labels)
+    if span is None:
+        return
+    first, last = span
+    if first == 0 and last == len(dates) - 1:
+        return  # full range — no zoom needed
+    lo = max(0, first - padding_bars)
+    hi = min(len(dates) - 1, last)
+    ax.set_xlim(dates[lo], dates[hi])
+
+
+def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None, labels=None) -> None:
     fig, (ax_price, ax_regime) = plt.subplots(
         2, 1, figsize=(14, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]},
     )
     dates = pd.to_datetime(df["date"].values)
     closes = df["close"].values
+    # Auto-zoom: if `labels` is supplied and only covers a strict subset of
+    # the timeline (typical prediction plot — empty in train, set in test),
+    # crop the x-axis to the prediction window. Label plots pass labels=None
+    # OR labels covering the full range, which is a no-op.
+    if labels is not None:
+        _maybe_zoom(ax_price, dates, labels)
     ax_price.plot(dates, closes, color="black", linewidth=0.7)
     ax_price.set_yscale("log")
     ax_price.set_ylabel("close (log)")
@@ -122,6 +165,9 @@ def _plot_B(
         ax.axvspan(s_dt, e_dt, color=LABEL_COLORS.get(lab, "gray"), alpha=0.10, lw=0)
     ax.plot(dates, closes, color="black", linewidth=0.7, label="close (actual)")
     ax.plot(dates, synth_eq, color="#1f77b4", linewidth=1.5, label="synth equity (long bull / short bear)")
+    # Auto-zoom on the prediction window when raw_labels is sparse (e.g.
+    # prediction plots where only the test slice has non-empty labels).
+    _maybe_zoom(ax, dates, raw_labels.values if hasattr(raw_labels, "values") else raw_labels)
     ax.set_yscale("log")
     ax.set_ylabel("price / equity (log)")
     ax.set_title(f"(B) [{title_suffix}] synthetic regime-trader equity vs price")
@@ -240,17 +286,25 @@ def plot_synth_equity_multi(
 
     cmap = plt.get_cmap("tab10")
     items = sorted(predictions_by_name.items())  # stable color assignment
+    # Track the union span across all predictors for the auto-zoom.
+    sample_preds = None
     for i, (name, preds) in enumerate(items):
         try:
             # Use raw predictions (no smoothing) so the equity curves match
             # the synth_gain console metric. Earlier 168-bar smoothing made
             # the multi plot diverge from the per-fold gain numbers.
             preds_arr = preds if isinstance(preds, np.ndarray) else np.asarray(preds)
+            if sample_preds is None:
+                sample_preds = preds_arr
             synth_eq, _ = synth_equity_curve(closes, preds_arr)
             ax.plot(dates, synth_eq, color=cmap(i % 10), linewidth=1.2,
                     alpha=0.9, label=name)
         except Exception:
             continue
+    # Zoom to the prediction span — same logic as _plot_B; predictors all
+    # agree on which bars are predicted (test slice), so any one is enough.
+    if sample_preds is not None:
+        _maybe_zoom(ax, dates, sample_preds)
 
     ax.set_yscale("log")
     ax.set_ylabel("price / equity (log)")
@@ -324,8 +378,10 @@ def save_label_plots(df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: Ru
     smooth = denoise_labels(labels, window=168)
     runs = _compute_runs(df, smooth)
     suffix = f"labels-{cfg.target}-{cfg.timeframe}"
+    # No labels=… arg → no auto-zoom (full dataset view, intended for label plots).
     _plot_A(df, runs, out_dir / "A_labels_background.png", suffix)
     # Equity uses raw labels (matches metric); regime bands use smoothed.
+    # raw_labels covers the whole range so _maybe_zoom is a no-op here.
     _plot_B(df, labels, smooth, runs, out_dir / "B_labels_synth.png", suffix)
 
 
@@ -336,7 +392,10 @@ def save_prediction_plots(
     smooth = denoise_labels(predictions, window=168)
     runs = _compute_runs(df, smooth)
     suffix = f"pred-{predictor_name}-{cfg.target}-{cfg.timeframe}"
-    _plot_A(df, runs, out_dir / "A_predictions_background.png", suffix, split_dt)
+    # Pass labels=predictions so _plot_A zooms to the prediction window.
+    _plot_A(df, runs, out_dir / "A_predictions_background.png", suffix, split_dt,
+            labels=predictions)
     # Equity uses raw predictions (matches synth_gain console metric);
     # regime bands keep the 7-day smoothing for visual cleanliness.
+    # _plot_B auto-zooms via raw_labels (predictions has empty bars in train).
     _plot_B(df, predictions, smooth, runs, out_dir / "B_predictions_synth.png", suffix, split_dt)
