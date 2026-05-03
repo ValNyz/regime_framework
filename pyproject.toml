@@ -24,6 +24,8 @@ dependencies = [
     "transformers>=4.40",
     "accelerate",
     "safetensors",
+    "typer>=0.12",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
