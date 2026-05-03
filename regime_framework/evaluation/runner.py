@@ -31,7 +31,7 @@ from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
 from ..visualization.regime_plots import save_label_plots, save_prediction_plots
 from .metrics import evaluate
-from .splits import time_aware_split
+from .splits import time_aware_split, walk_forward_splits
 
 
 console = Console()
@@ -133,8 +133,14 @@ class BenchmarkRunner:
         self.feature_count = X.shape[1]
         console.print(f"  Final dataset: {len(X)} rows × {X.shape[1]} cols")
 
-        # ----- 5. Split -----
+        # ----- 5. Split: single or walk-forward -----
         purge = cfg.purge_bars
+        if cfg.split.walk_forward_folds and cfg.split.walk_forward_folds > 0:
+            return self._run_walk_forward(cfg, df, X, y, dates, purge)
+        else:
+            return self._run_single_split(cfg, df, labels, X, y, dates, purge)
+
+    def _run_single_split(self, cfg, df, labels, X, y, dates, purge: int) -> dict:
         X_tr, y_tr, d_tr, X_te, y_te, d_te = time_aware_split(
             X, y, dates,
             train_fraction=cfg.split.train_fraction,
@@ -150,7 +156,6 @@ class BenchmarkRunner:
         )
         console.print(f"  Purge gap: {purge} bars")
 
-        # ----- 6. Signal analysis (uses train data only) -----
         console.print("[bold]Signal analysis (lift + MI on train)[/bold]")
         try:
             ranking = rank_signals(X_tr, y_tr)
@@ -160,15 +165,53 @@ class BenchmarkRunner:
         except Exception as e:
             console.print(f"[yellow]signal_analysis skipped: {e}[/yellow]")
 
-        # ----- 7. Predictors -----
         predictors = _build_predictors(cfg)
         console.print(f"[bold]Running {len(predictors)} predictors[/bold]")
         baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
         console.print(f"  Baseline (always-predict majority): acc={baseline_acc:.3f}")
 
+        results, per_predictor_predictions = self._fit_eval_loop(
+            predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
+        )
+        self.results = results
+        self._print_summary(baseline_acc)
+        self._save_summary_csv()
+
+        if results:
+            best = max(results, key=lambda r: r.kappa if not np.isnan(r.kappa) else -2)
+            best_pred = self._build_full_pred_series(
+                df, labels, X.index, X_tr.index, X_te.index,
+                per_predictor_predictions[best.name],
+            )
+            console.print(
+                f"[bold]Best predictor: {best.name}[/bold] "
+                f"(κ={best.kappa:+.3f}, acc={best.accuracy:.3f}) — saving prediction plots"
+            )
+            save_prediction_plots(
+                df, best_pred, PLOTS_DIR, cfg,
+                predictor_name=best.name,
+                split_dt=d_te.iloc[0],
+            )
+
+        return {
+            "results": [r.__dict__ for r in results],
+            "label_distribution": self.label_distribution,
+            "feature_count": self.feature_count,
+            "baseline_acc": baseline_acc,
+        }
+        # ----- end of _run_single_split -----
+
+    # -------------------------------------------------------------------
+    # Helpers shared by single-split and walk-forward
+    # -------------------------------------------------------------------
+    def _fit_eval_loop(
+        self,
+        predictors: list[BasePredictor],
+        X_tr, y_tr, d_tr, df_tr,
+        X_te, y_te, d_te, df_te,
+    ) -> tuple[list[PredictionResult], dict[str, np.ndarray]]:
         results: list[PredictionResult] = []
         per_predictor_predictions: dict[str, np.ndarray] = {}
-
         for predictor in predictors:
             with console.status(f"[bold green]{predictor.name}[/bold green]"):
                 t0 = time.time()
@@ -193,37 +236,101 @@ class BenchmarkRunner:
                 except Exception as e:
                     console.print(f"  [red]✘[/red] {predictor.name}: {e}")
                     traceback.print_exc()
+        return results, per_predictor_predictions
 
-        self.results = results
+    def _run_walk_forward(self, cfg, df, X, y, dates, purge: int) -> dict:
+        n_folds = int(cfg.split.walk_forward_folds)
+        console.print(
+            f"[bold]Walk-forward CV[/bold] — {n_folds} folds, "
+            f"min_train={cfg.split.min_train_fraction:.0%}, purge={purge} bars"
+        )
 
-        # ----- 8. Consolidated comparison + plots -----
-        self._print_summary(baseline_acc)
-        self._save_summary_csv()
+        # Per-fold results: rows = (fold, predictor), cols = metrics
+        per_fold_rows: list[dict] = []
+        all_results_aggr: dict[str, list[PredictionResult]] = {}
 
-        # Best predictor → save prediction plots over full data
-        if results:
-            best = max(results, key=lambda r: r.kappa if not np.isnan(r.kappa) else -2)
-            best_pred = self._build_full_pred_series(
-                df, labels, X.index, X_tr.index, X_te.index,
-                per_predictor_predictions[best.name],
+        for train_idx, test_idx, fold_id in walk_forward_splits(
+            n=len(X),
+            n_folds=n_folds,
+            purge_bars=purge,
+            min_train_fraction=cfg.split.min_train_fraction,
+        ):
+            X_tr = X.iloc[train_idx]
+            y_tr = y.iloc[train_idx]
+            d_tr = dates.iloc[train_idx]
+            df_tr = df.loc[X_tr.index]
+            X_te = X.iloc[test_idx]
+            y_te = y.iloc[test_idx]
+            d_te = dates.iloc[test_idx]
+            df_te = df.loc[X_te.index]
+
+            console.rule(
+                f"[bold cyan]Fold {fold_id+1}/{n_folds}: "
+                f"train={len(X_tr)} ({d_tr.iloc[0].date()}→{d_tr.iloc[-1].date()}) "
+                f"| test={len(X_te)} ({d_te.iloc[0].date()}→{d_te.iloc[-1].date()})"
             )
-            console.print(
-                f"[bold]Best predictor: {best.name}[/bold] "
-                f"(κ={best.kappa:+.3f}, acc={best.accuracy:.3f}) — saving prediction plots"
-            )
-            save_prediction_plots(
-                df, best_pred, PLOTS_DIR, cfg,
-                predictor_name=best.name,
-                split_dt=d_te.iloc[0],
+
+            baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
+            predictors = _build_predictors(cfg)
+            fold_results, _ = self._fit_eval_loop(
+                predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
             )
 
-        return {
-            "results": [r.__dict__ for r in results],
-            "label_distribution": self.label_distribution,
-            "feature_count": self.feature_count,
-            "baseline_acc": baseline_acc,
-        }
+            for r in fold_results:
+                per_fold_rows.append({
+                    "fold": fold_id, "predictor": r.name, "family": r.family,
+                    "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
+                    "n_test": r.n_test, "elapsed_sec": r.metadata.get("elapsed_sec", 0),
+                    "test_start": str(d_te.iloc[0].date()),
+                    "test_end": str(d_te.iloc[-1].date()),
+                    "baseline_acc": baseline_acc,
+                })
+                all_results_aggr.setdefault(r.name, []).append(r)
 
+        if not per_fold_rows:
+            console.print("[red]No folds produced — check min_train_fraction / data length[/red]")
+            return {"results": [], "folds": []}
+
+        per_fold_df = pd.DataFrame(per_fold_rows)
+        per_fold_df.to_csv(RESULTS_DIR / "walk_forward_per_fold.csv", index=False)
+        self._print_walk_forward_summary(per_fold_df)
+        return {"folds": per_fold_rows, "n_folds_run": per_fold_df["fold"].nunique()}
+
+    def _print_walk_forward_summary(self, per_fold: pd.DataFrame) -> None:
+        # Aggregated table: mean ± std κ across folds
+        agg = per_fold.groupby(["predictor", "family"]).agg(
+            kappa_mean=("kappa", "mean"),
+            kappa_std=("kappa", "std"),
+            kappa_min=("kappa", "min"),
+            kappa_max=("kappa", "max"),
+            acc_mean=("accuracy", "mean"),
+            f1_mean=("f1_macro", "mean"),
+            n_folds=("fold", "count"),
+        ).reset_index().sort_values("kappa_mean", ascending=False)
+
+        agg.to_csv(RESULTS_DIR / "walk_forward_aggregated.csv", index=False)
+
+        table = Table(title="Walk-forward aggregate — sorted by mean κ")
+        for col in ("predictor", "family", "kappa_mean", "kappa_std", "kappa_min", "kappa_max", "acc_mean", "f1_mean", "n_folds"):
+            table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
+        for _, r in agg.iterrows():
+            color = ""
+            km = float(r["kappa_mean"])
+            if km > 0.4:
+                color = "green"
+            elif km > 0.2:
+                color = "yellow"
+            elif km < 0:
+                color = "red"
+            kstr = f"[{color}]{km:+.3f}[/{color}]" if color else f"{km:+.3f}"
+            table.add_row(
+                str(r["predictor"]), str(r["family"]),
+                kstr, f"{r['kappa_std']:.3f}", f"{r['kappa_min']:+.3f}", f"{r['kappa_max']:+.3f}",
+                f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}", str(int(r["n_folds"])),
+            )
+        console.print(table)
+
+    # -------------------------------------------------------------------
     @staticmethod
     def _build_full_pred_series(
         df: pd.DataFrame, labels: pd.Series,

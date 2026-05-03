@@ -100,6 +100,8 @@ class FeatureConfig:
 class SplitConfig:
     train_fraction: float = 0.80
     purge_bars: int | None = None        # if None, defaults to max(L_range)
+    walk_forward_folds: int = 0          # 0 = single split; >0 = K-fold walk-forward
+    min_train_fraction: float = 0.40     # walk-forward: fold-0 train size
 
 
 @dataclass

@@ -40,6 +40,14 @@ def run(
     skip_pretrained: bool = typer.Option(
         False, "--skip-pretrained", help="Skip all foundation models (faster).",
     ),
+    walk_forward: int = typer.Option(
+        0, "--walk-forward", "-wf",
+        help="Number of expanding-window folds. 0 = single train/test split (default).",
+    ),
+    min_train_fraction: float = typer.Option(
+        0.40, "--min-train-fraction",
+        help="Walk-forward: fraction of total data used as train in fold 0.",
+    ),
 ):
     """Run the full benchmark on a preset config."""
     cfg = RunConfig.from_preset(preset)
@@ -48,6 +56,9 @@ def run(
         cfg.predictors.families.remove("pretrained")
     if pretrained:
         cfg.predictors.pretrained_models = list(pretrained)
+    if walk_forward > 0:
+        cfg.split.walk_forward_folds = walk_forward
+        cfg.split.min_train_fraction = float(min_train_fraction)
 
     from .evaluation.runner import BenchmarkRunner
     runner = BenchmarkRunner(cfg)
