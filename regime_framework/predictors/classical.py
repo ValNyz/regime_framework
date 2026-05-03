@@ -123,10 +123,10 @@ class _SklearnBase(BasePredictor):
 # Linear & tree ensembles
 # ---------------------------------------------------------------------------
 class LogRegPredictor(_SklearnBase):
-    """Multinomial logistic regression. With finetune=True, switches to the
-    SAGA solver (default lbfgs doesn't support warm_start for multiclass) and
-    keeps coef_/intercept_ across folds — the optimizer continues from prior
-    weights instead of restarting.
+    """Multinomial logistic regression. With finetune=True, enables
+    warm_start=True so the lbfgs optimizer continues from prior coef_ instead
+    of restarting (same solver as cold — lbfgs supports warm_start in modern
+    sklearn). Cost overhead at fold 1 is zero; fold 2+ converges faster.
     """
     base_name = "LogReg"
     needs_scaling = True
@@ -134,13 +134,10 @@ class LogRegPredictor(_SklearnBase):
 
     def __init__(self, finetune: bool = False) -> None:
         super().__init__(finetune=finetune)
-        if finetune:
-            self.clf = LogisticRegression(solver="saga", max_iter=2000, warm_start=True)
-        else:
-            self.clf = LogisticRegression(max_iter=2000)
+        self.clf = LogisticRegression(max_iter=2000, warm_start=finetune)
 
     def _warm_fit(self, X_train, y_train, dates_train, df_train):
-        # warm_start=True on the SAGA solver picks up from prior coef_.
+        # warm_start=True keeps coef_/intercept_ as the lbfgs starting point.
         assert self.scaler is not None, "scaler should be fit on first cold call"
         Xs = self.scaler.fit_transform(X_train)  # rescale on new fold data
         self.clf.fit(Xs, y_train.values)
