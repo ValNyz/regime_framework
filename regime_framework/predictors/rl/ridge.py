@@ -36,8 +36,18 @@ class _RidgeRLBase(_FQIRLBase):
         self.alpha = float(alpha)
 
     def _make_regressor(self) -> Any:
+        # Standardize features before the Ridge solve. Without this, the
+        # normal-equations system is ill-conditioned on raw features (rcond
+        # ~1e-13 since prices, z-scores and ratios sit on wildly different
+        # scales) and sklearn raises LinAlgWarning. StandardScaler in front
+        # of Ridge fixes the conditioning at the source.
         from sklearn.linear_model import Ridge
-        return Ridge(alpha=self.alpha, random_state=self.seed)
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("ridge", Ridge(alpha=self.alpha, random_state=self.seed)),
+        ])
 
 
 class RidgeQ2Predictor(_RidgeRLBase):
