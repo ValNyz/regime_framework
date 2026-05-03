@@ -224,3 +224,8 @@ class _FQIRLBase(RLBasePredictor):
         if self._learner is None:
             raise RuntimeError(f"{self.name}: predict() called before fit()")
         return self._learner.select_action(obs)
+
+    def _q_values_at(self, obs: np.ndarray) -> np.ndarray | None:
+        if self._learner is None or not self._learner.is_fitted():
+            return None
+        return self._learner.q_values(obs)

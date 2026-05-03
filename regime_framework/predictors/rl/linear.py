@@ -182,6 +182,11 @@ class _LinearRLBase(RLBasePredictor):
             raise RuntimeError(f"{self.name}: predict() called before fit()")
         return self._learner.select_action(obs, deterministic=True)
 
+    def _q_values_at(self, obs: np.ndarray) -> np.ndarray | None:
+        if self._learner is None:
+            return None
+        return self._learner.q_values(obs)
+
 
 class LinearQ2Predictor(_LinearRLBase):
     """Linear-Q with discrete-2 action space (long/short)."""

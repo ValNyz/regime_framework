@@ -149,6 +149,24 @@ class _NNRLBase(RLBasePredictor):
         action, _ = self._algo.predict(obs, deterministic=True)
         return action
 
+    def _q_values_at(self, obs: np.ndarray) -> np.ndarray | None:
+        """DQN exposes a Q-net we can query for confidence-aware proba.
+        SAC is continuous and has no per-discrete-action Q — return None.
+        """
+        if self._algo is None or self.action_space_type == ACTION_CONTINUOUS:
+            return None
+        try:
+            import torch
+            q_net = getattr(self._algo, "q_net", None)
+            if q_net is None:
+                return None
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self._algo.device).unsqueeze(0)
+            with torch.no_grad():
+                q = q_net(obs_t).cpu().numpy().squeeze(0)
+            return np.asarray(q, dtype=np.float64)
+        except Exception:
+            return None
+
 
 class DQN2Predictor(_NNRLBase):
     """SB3 DQN with discrete-2 action space (long/short, always in)."""

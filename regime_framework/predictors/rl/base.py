@@ -146,8 +146,11 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         features = np.asarray(X_test.values, dtype=np.float32)
         closes = np.asarray(df_test["close"].values, dtype=np.float64) if "close" in df_test.columns else None
         n = len(features)
-        idx_to_lbl = {i: c for i, c in enumerate(LABEL_ORDER)}
         out = np.full(n, "", dtype=object)
+        # Per-bar per-action Q-values (None for bars where the subclass
+        # doesn't expose them, or for continuous action spaces). Used by
+        # predict_proba to scale ensemble votes by Q-margin.
+        q_per_bar: list[np.ndarray | None] = [None] * n
         # Use closes for env if available; otherwise fake stationary prices
         # (predict-time prices don't affect actions, only the env's returned
         # reward which we ignore).
@@ -157,6 +160,7 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         obs, _ = env.reset()
         for t in range(n - 1):
             action = self._act(obs)
+            q_per_bar[t] = self._q_values_at(obs)
             position = action_to_position(action, self.action_space_type, self.flat_threshold)
             out[t] = position_to_label(position, self.flat_threshold)
             obs, _, terminated, _, _ = env.step(action)
@@ -166,11 +170,56 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         # the previous label for visual continuity.
         if n >= 2:
             out[n - 1] = out[n - 2]
+            q_per_bar[n - 1] = q_per_bar[n - 2]
+        # Cache for predict_proba (called right after by the runner).
+        self._last_predictions = out
+        self._last_q_per_bar = q_per_bar
         return out
 
     def predict_proba(self, X_test, dates_test, df_test):
-        # Excluded from Ensemble for now per user spec — return None to skip.
-        return None
+        """Return per-bar (n, n_classes) proba aligned with LABEL_ORDER.
+
+        For discrete action spaces with Q-values exposed by the subclass,
+        we softmax the Q-values per bar and map per-action proba to per-label
+        proba via action_to_position / position_to_label. The softmax
+        magnitude carries the Q-margin information that ConfidenceEnsemble
+        uses to weight votes — bars with one dominant action contribute
+        sharper proba (max ~ 1.0), bars with similar Q-values contribute
+        flatter proba (max ~ 1/n_classes). For continuous action spaces or
+        when Q-values aren't available, fall back to one-hot.
+        """
+        # Reuse predict()'s output if it was just called (typical flow:
+        # runner does p.predict() then p.predict_proba()). Otherwise re-run.
+        labels = getattr(self, "_last_predictions", None)
+        q_per_bar = getattr(self, "_last_q_per_bar", None)
+        if labels is None or q_per_bar is None or len(labels) != len(X_test):
+            labels = self.predict(X_test, dates_test, df_test)
+            q_per_bar = self._last_q_per_bar  # populated by predict()
+
+        n = len(labels)
+        n_classes = len(LABEL_ORDER)
+        proba = np.zeros((n, n_classes), dtype=np.float64)
+        cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
+
+        for t in range(n):
+            q = q_per_bar[t]
+            if q is None or self.action_space_type == ACTION_CONTINUOUS:
+                # Fallback: one-hot at the predicted label.
+                lbl = labels[t]
+                if lbl in cls_to_idx:
+                    proba[t, cls_to_idx[lbl]] = 1.0
+                continue
+            # Softmax over Q-values → per-action proba; map to per-label.
+            q_arr = np.asarray(q, dtype=np.float64)
+            q_arr = q_arr - q_arr.max()  # numerical stability
+            exp_q = np.exp(q_arr)
+            action_proba = exp_q / exp_q.sum()
+            for a, ap in enumerate(action_proba):
+                position = action_to_position(a, self.action_space_type, self.flat_threshold)
+                lbl = position_to_label(position, self.flat_threshold)
+                if lbl in cls_to_idx:
+                    proba[t, cls_to_idx[lbl]] += ap
+        return proba
 
     # ------------------------------------------------------------------
     # Hooks for subclasses
@@ -194,6 +243,13 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         """Single-step action selection at predict time. Returns the env-native
         action (int for discrete, float for continuous)."""
         raise NotImplementedError
+
+    def _q_values_at(self, obs: np.ndarray) -> np.ndarray | None:
+        """Optional. Override to expose per-action Q-values (shape: n_actions)
+        at predict time, used by predict_proba to scale ensemble votes by
+        Q-margin. Default None = predict_proba falls back to one-hot.
+        """
+        return None
 
     def _has_prior_state(self) -> bool:
         """Override to return True when the subclass already has a trained

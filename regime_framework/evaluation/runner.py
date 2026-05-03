@@ -204,7 +204,12 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     # family is enabled. Both are just aggregators — make no sense without
     # bases. Ensemble = uniform soft vote; Ensemble-Conf = per-bar
     # max-proba-weighted vote (more confident base wins each bar).
-    proba_families = {"classical", "deep_nets", "transformer"}
+    # RL predictors expose softmax(Q) as proba (one-hot fallback for
+    # continuous / unfitted) so they participate in the ensemble like any
+    # other probabilistic base. The Q-margin information naturally weights
+    # the ConfidenceEnsemble — bars with one dominant action contribute
+    # sharper proba, bars with similar Q-values contribute flatter proba.
+    proba_families = {"classical", "deep_nets", "transformer", "rl"}
     if cfg.predictors.include_ensemble and (proba_families & families):
         _add(EnsemblePredictor)
         _add(ConfidenceEnsemblePredictor)
