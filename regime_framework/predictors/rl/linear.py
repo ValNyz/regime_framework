@@ -116,9 +116,16 @@ class _LinearRLBase(RLBasePredictor):
 
         envs = [self._build_env(f, c) for (f, c) in envs_data]
         steps_per_env = max(1, total_timesteps // len(envs))
+        # Print 5 progress checkpoints per env, regardless of steps_per_env size
+        log_every = max(1, steps_per_env // 5)
+        print(
+            f"      {self.name} training: {len(envs)} env(s) × {steps_per_env} steps "
+            f"= {len(envs)*steps_per_env}"
+        )
 
-        for env in envs:
+        for env_idx, env in enumerate(envs):
             obs, _ = env.reset()
+            recent_rewards: list[float] = []
             for step in range(steps_per_env):
                 # Linear ε decay over this env's budget
                 progress = step / max(1, steps_per_env - 1)
@@ -129,6 +136,14 @@ class _LinearRLBase(RLBasePredictor):
                 next_obs, reward, terminated, _, _ = env.step(action)
                 self._learner.update(obs, action, reward, next_obs, terminated)
                 obs = next_obs
+                recent_rewards.append(float(reward))
+                if (step + 1) % log_every == 0 or step == steps_per_env - 1:
+                    mean_r = float(np.mean(recent_rewards[-log_every:]))
+                    print(
+                        f"      {self.name} env {env_idx+1}/{len(envs)} "
+                        f"step {step+1}/{steps_per_env} "
+                        f"eps={self._learner.epsilon:.3f} mean_r={mean_r:+.5f}"
+                    )
                 if terminated:
                     obs, _ = env.reset()
 

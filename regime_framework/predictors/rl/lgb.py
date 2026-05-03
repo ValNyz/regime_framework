@@ -71,8 +71,17 @@ class _FQILearner:
                 out[:, a] = self._models[a].predict(states)
         return out
 
-    def fit_iteration(self, transitions: list[tuple], n_iterations: int = 20) -> None:
-        """One full FQI fit: K iterations of (compute targets → fit per-action)."""
+    def fit_iteration(
+        self,
+        transitions: list[tuple],
+        n_iterations: int = 20,
+        progress_label: str | None = None,
+    ) -> None:
+        """One full FQI fit: K iterations of (compute targets → fit per-action).
+
+        progress_label, if set, prefixes a per-iteration log line so the user
+        can see how training is progressing.
+        """
         from lightgbm import LGBMRegressor
 
         if not transitions:
@@ -103,7 +112,23 @@ class _FQILearner:
                 y_a = targets[mask]
                 model = LGBMRegressor(**self._params)
                 model.fit(X_a, y_a)
+                # LightGBM 4.x's sklearn wrapper records feature_names_in_ even
+                # when fit gets numpy. We always pass numpy at predict, so this
+                # mismatch triggers sklearn's "X does not have valid feature
+                # names" warning on every predict. Drop the attribute so the
+                # estimator behaves like a numpy-only model.
+                if hasattr(model, "feature_names_in_"):
+                    delattr(model, "feature_names_in_")
                 self._models[a] = model
+
+            if progress_label is not None and (
+                k == 0 or (k + 1) % max(1, n_iterations // 5) == 0 or k == n_iterations - 1
+            ):
+                mean_target = float(np.mean(targets))
+                print(
+                    f"      {progress_label} FQI iter {k+1}/{n_iterations} "
+                    f"target_mean={mean_target:+.4f}"
+                )
 
     def select_action(self, state: np.ndarray) -> int:
         if not self.is_fitted():
@@ -176,7 +201,11 @@ class _LGBRLBase(RLBasePredictor):
         envs = [self._build_env(f, c) for (f, c) in envs_data]
         transitions: list[tuple] = []
         steps_per_env = max(10, total_timesteps // len(envs))
-        for env in envs:
+        print(
+            f"      {self.name} collecting transitions: "
+            f"{len(envs)} env(s) × {steps_per_env} steps = {len(envs)*steps_per_env}"
+        )
+        for env_idx, env in enumerate(envs):
             obs, _ = env.reset()
             for _ in range(steps_per_env):
                 # ε-greedy: if model fitted, exploit half the time; else random
@@ -190,9 +219,13 @@ class _LGBRLBase(RLBasePredictor):
                     obs, _ = env.reset()
                 else:
                     obs = next_obs
+            if len(envs) > 1:
+                print(f"      {self.name} env {env_idx+1}/{len(envs)} done ({steps_per_env} steps)")
 
         # 2. FQI iterations on the collected transitions
-        self._learner.fit_iteration(transitions, n_iterations=self.iterations)
+        self._learner.fit_iteration(
+            transitions, n_iterations=self.iterations, progress_label=self.name,
+        )
 
     def _act(self, obs: np.ndarray):
         if self._learner is None:

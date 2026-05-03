@@ -110,13 +110,21 @@ class _NNRLBase(RLBasePredictor):
         # envs in parallel. The agent collects transitions from all coins
         # interleaved — better generalization than serial concatenation.
         env = self._build_vec_env(envs_data)
+        # SB3's built-in tqdm progress bar — same level of detail the user gets
+        # from MLP/GRU/TST training in the rest of the framework.
+        kind = "FT" if (warm and self._algo is not None) else "cold"
+        print(f"      {self.name} training ({kind}): {total_timesteps} timesteps × {len(envs_data)} env(s)")
         if warm and self._algo is not None:
             # FT: continue training from existing weights + replay buffer
             self._algo.set_env(env)
-            self._algo.learn(total_timesteps=total_timesteps, reset_num_timesteps=False)
+            self._algo.learn(
+                total_timesteps=total_timesteps,
+                reset_num_timesteps=False,
+                progress_bar=True,
+            )
         else:
             self._algo = self._make_algo(env)
-            self._algo.learn(total_timesteps=total_timesteps)
+            self._algo.learn(total_timesteps=total_timesteps, progress_bar=True)
 
     def _build_vec_env(self, envs_data: list[tuple[np.ndarray, np.ndarray]]):
         """Build SB3 vec_env from N coin envs. Single coin → DummyVecEnv of 1.
