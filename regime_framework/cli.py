@@ -45,8 +45,9 @@ def run(
     cv_folds: int = typer.Option(
         0, "--cv-folds", "-k",
         help="Number of CV folds. 0 = single split (default). In 'rolling' mode, "
-             "caps the consecutive fold iteration at this many (window + step "
-             "stay fixed; first N folds chronologically are used).",
+             "caps at this many folds — the LATEST N consecutive folds are kept "
+             "(window + step stay fixed; fold_id reflects original chronological "
+             "position in the data).",
     ),
     cv_mode: str = typer.Option(
         "walk_forward", "--cv-mode",

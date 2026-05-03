@@ -488,8 +488,12 @@ class BenchmarkRunner:
                 step_bars=step,
             )
             if max_folds:
-                import itertools
-                split_iter = itertools.islice(split_iter, max_folds)
+                # Take the LATEST max_folds (chronologically most recent) —
+                # more relevant for current-strategy assessment. fold_id is
+                # preserved from the full sequence so it tells you the
+                # position in the original timeline.
+                all_folds = list(split_iter)
+                split_iter = iter(all_folds[-max_folds:])
             n_folds = est_folds
         else:
             console.print(
