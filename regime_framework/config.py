@@ -155,6 +155,52 @@ class TrainingConfig:
 
 
 @dataclass
+class RLConfig:
+    """Hyperparameters for the rl predictor family. Each approximator can
+    override the shared ones via its dedicated sub-block (nn / linear / lgb).
+    """
+    # Shared across approximators
+    total_timesteps: int = 100000      # RL training budget per fold
+    transaction_cost: float = 0.0      # 0 = no penalty. Example: 0.001 = 10 bps per flip.
+    flat_threshold: float = 0.05       # continuous action → flat if |action| < this
+    ft_steps_scale: float = 0.5        # FT mode: total_timesteps × this
+    seed: int = 42
+    # Action-space variants to instantiate (omit any to skip those predictors)
+    action_spaces: list[str] = field(default_factory=lambda: [
+        "discrete-2", "discrete-3", "continuous"
+    ])
+    # Approximator-specific (not all keys apply to every approximator)
+    nn_learning_rate: float = 5e-4
+    nn_buffer_size: int = 50000
+    nn_gamma: float = 0.99
+    nn_net_arch: list[int] = field(default_factory=lambda: [64, 32])
+    nn_verbose: int = 0
+    linear_learning_rate: float = 1e-3
+    linear_gamma: float = 0.99
+    linear_epsilon_start: float = 1.0
+    linear_epsilon_end: float = 0.05
+    lgb_n_estimators: int = 200
+    lgb_max_depth: int = 6
+    lgb_learning_rate: float = 0.05
+    lgb_gamma: float = 0.99
+    lgb_iterations: int = 20
+
+
+def _extract_predictor_kwargs(d: dict) -> dict:
+    """Translate the YAML 'predictors' block into PredictorConfig kwargs.
+
+    The 'rl' sub-block is wrapped into an RLConfig before instantiation.
+    Other keys pass through unchanged.
+    """
+    if not d:
+        return {}
+    out = dict(d)
+    if "rl" in out and isinstance(out["rl"], dict):
+        out["rl"] = RLConfig(**out["rl"])
+    return out
+
+
+@dataclass
 class PredictorConfig:
     families: list[str] = field(default_factory=lambda: [
         "classical", "rule_based", "deep_nets", "transformer", "pretrained"
@@ -209,6 +255,8 @@ class PredictorConfig:
     # Useful when κ and gain disagree (common in strongly-directional markets
     # where "always long" beats κ-skilled predictors on synth_gain).
     rank_by: str = "kappa"
+    # RL approximator hyperparams. See RLConfig for each field.
+    rl: RLConfig = field(default_factory=RLConfig)
 
 
 @dataclass
@@ -355,7 +403,7 @@ class RunConfig:
             label=LabelConfig(**data.get("label", {})),
             features=FeatureConfig(**feat_block),
             split=SplitConfig(**data.get("split", {})),
-            predictors=PredictorConfig(**data.get("predictors", {})),
+            predictors=PredictorConfig(**_extract_predictor_kwargs(data.get("predictors", {}))),
             training=training_cfg,
             plots=PlotConfig(**data.get("plots", {})),
             seed=data.get("seed", 42),

@@ -99,6 +99,68 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 p = cls(mode=mode, horizon=cfg.predictors.forecast_horizon)
                 p.name = f"{cls.name}-{mode}"
                 out.append(p)
+    if "rl" in families:
+        # RL predictors: 3 approximators × 2-3 action spaces. Each subclass'
+        # action_space_type is fixed at the class level — we instantiate the
+        # subset selected by cfg.predictors.rl.action_spaces.
+        from ..predictors.rl import (
+            DQN2Predictor, DQN3Predictor, SACPredictor,
+            LinearQ2Predictor, LinearQ3Predictor,
+            LGBQ2Predictor, LGBQ3Predictor,
+        )
+        rl_cfg = cfg.predictors.rl
+        rl_shared = dict(
+            transaction_cost=rl_cfg.transaction_cost,
+            flat_threshold=rl_cfg.flat_threshold,
+            total_timesteps=rl_cfg.total_timesteps,
+            ft_steps_scale=rl_cfg.ft_steps_scale,
+            seed=rl_cfg.seed,
+        )
+        # Map action_space → list of (cls, approximator-specific kwargs)
+        rl_classes = {
+            "discrete-2": [
+                (DQN2Predictor, dict(rl_shared,
+                    learning_rate=rl_cfg.nn_learning_rate,
+                    buffer_size=rl_cfg.nn_buffer_size,
+                    gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
+                    verbose=rl_cfg.nn_verbose)),
+                (LinearQ2Predictor, dict(rl_shared,
+                    learning_rate=rl_cfg.linear_learning_rate, gamma=rl_cfg.linear_gamma,
+                    epsilon_start=rl_cfg.linear_epsilon_start,
+                    epsilon_end=rl_cfg.linear_epsilon_end)),
+                (LGBQ2Predictor, dict(rl_shared,
+                    n_estimators=rl_cfg.lgb_n_estimators, max_depth=rl_cfg.lgb_max_depth,
+                    learning_rate=rl_cfg.lgb_learning_rate, gamma=rl_cfg.lgb_gamma,
+                    iterations=rl_cfg.lgb_iterations)),
+            ],
+            "discrete-3": [
+                (DQN3Predictor, dict(rl_shared,
+                    learning_rate=rl_cfg.nn_learning_rate,
+                    buffer_size=rl_cfg.nn_buffer_size,
+                    gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
+                    verbose=rl_cfg.nn_verbose)),
+                (LinearQ3Predictor, dict(rl_shared,
+                    learning_rate=rl_cfg.linear_learning_rate, gamma=rl_cfg.linear_gamma,
+                    epsilon_start=rl_cfg.linear_epsilon_start,
+                    epsilon_end=rl_cfg.linear_epsilon_end)),
+                (LGBQ3Predictor, dict(rl_shared,
+                    n_estimators=rl_cfg.lgb_n_estimators, max_depth=rl_cfg.lgb_max_depth,
+                    learning_rate=rl_cfg.lgb_learning_rate, gamma=rl_cfg.lgb_gamma,
+                    iterations=rl_cfg.lgb_iterations)),
+            ],
+            "continuous": [
+                (SACPredictor, dict(rl_shared,
+                    learning_rate=rl_cfg.nn_learning_rate,
+                    buffer_size=rl_cfg.nn_buffer_size,
+                    gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
+                    verbose=rl_cfg.nn_verbose)),
+            ],
+        }
+        for action_space in rl_cfg.action_spaces:
+            for cls, kw in rl_classes.get(action_space, []):
+                out.append(cls(**kw))
+                if add_ft and getattr(cls, "supports_finetune", False):
+                    out.append(cls(finetune=True, **kw))
 
     # Auto-attach Ensemble + Ensemble-Conf whenever any probabilistic base
     # family is enabled. Both are just aggregators — make no sense without
