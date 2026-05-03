@@ -29,7 +29,7 @@ from ..predictors.classical import (
 from ..predictors.rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
 from ..predictors.deep_nets import GRUPredictor, LSTMPredictor
 from ..predictors.transformer import TimeSeriesTransformerPredictor
-from ..predictors.ensemble import EnsemblePredictor
+from ..predictors.ensemble import EnsemblePredictor, ConfidenceEnsemblePredictor
 from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
 from ..visualization.regime_plots import save_label_plots, save_prediction_plots
@@ -97,11 +97,14 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 p.name = f"{cls.name}-{mode}"
                 out.append(p)
 
-    # Auto-attach Ensemble whenever any probabilistic base family is enabled.
-    # Ensemble itself is just an aggregator — it makes no sense without bases.
+    # Auto-attach Ensemble + Ensemble-Conf whenever any probabilistic base
+    # family is enabled. Both are just aggregators — make no sense without
+    # bases. Ensemble = uniform soft vote; Ensemble-Conf = per-bar
+    # max-proba-weighted vote (more confident base wins each bar).
     proba_families = {"classical", "deep_nets", "transformer"}
     if cfg.predictors.include_ensemble and (proba_families & families):
         _add(EnsemblePredictor)
+        _add(ConfidenceEnsemblePredictor)
 
     return out
 
@@ -352,6 +355,10 @@ class BenchmarkRunner:
                     traceback.print_exc()
 
         # ---- Pass 2: ensembles (fed with this fold's base probabilities) ----
+        # IMPORTANT: per_predictor_probas is *only* populated in Pass 1 above —
+        # ensembles read from it but never write back. So Ensemble-Conf cannot
+        # ingest Ensemble's output and vice versa. Each ensemble averages only
+        # genuine base predictors (classical / deep_nets / transformer).
         for predictor in ensemble_predictors:
             with console.status(f"[bold green]{predictor.name}[/bold green]"):
                 t0 = time.time()

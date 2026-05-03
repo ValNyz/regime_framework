@@ -11,7 +11,7 @@ from .classical import (
 from .rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
 from .deep_nets import GRUPredictor, LSTMPredictor
 from .transformer import TimeSeriesTransformerPredictor
-from .ensemble import EnsemblePredictor
+from .ensemble import EnsemblePredictor, ConfidenceEnsemblePredictor
 
 __all__ = [
     "BasePredictor",
@@ -29,4 +29,5 @@ __all__ = [
     "LSTMPredictor",
     "TimeSeriesTransformerPredictor",
     "EnsemblePredictor",
+    "ConfidenceEnsemblePredictor",
 ]

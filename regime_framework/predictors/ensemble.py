@@ -117,3 +117,37 @@ class EnsemblePredictor(BasePredictor):
         z = z - z.max()
         e = np.exp(z)
         return e / e.sum()
+
+
+class ConfidenceEnsemblePredictor(EnsemblePredictor):
+    """Confidence-weighted soft-voting ensemble. Sibling of EnsemblePredictor:
+    same plumbing (feed_base_probas, update_prior_kappas, FT/cold split, base
+    deduplication), but each base's vote is weighted *per bar* by its own
+    max(predict_proba) — so a base that's very confident at bar t dominates
+    the average there even if its global weight is low.
+
+    Combines multiplicatively with the global weight (uniform for cold,
+    softmax-of-prior-kappa for FT). The two trust signals — "this base is
+    historically reliable" (global) and "this base is confident on this
+    specific bar" (per-bar) — compose cleanly.
+
+    With M predictors, N test bars, C classes:
+      stack    : (M, N, C)  — per-predictor probas
+      cert     : (M, N)     — per-predictor max-class proba per bar
+      combined : (M, N)     = global_w[:, None] * cert, normalized over M per bar
+      avg      : (N, C)     = sum_m combined[m, t] * stack[m, t, :]
+    """
+    base_name = "Ensemble-Conf"
+
+    def predict_proba(self, X_test, dates_test, df_test):
+        if not self._fold_base_probas:
+            return None
+        names = list(self._fold_base_probas.keys())
+        global_w = self._compute_weights(names)
+        stack = np.stack([self._fold_base_probas[n] for n in names], axis=0)  # (M, N, C)
+        cert = stack.max(axis=2)                                              # (M, N)
+        combined = global_w[:, None] * cert                                   # (M, N)
+        combined = combined / np.maximum(combined.sum(axis=0, keepdims=True), 1e-12)
+        avg = (combined[:, :, None] * stack).sum(axis=0)                      # (N, C)
+        avg = avg / np.maximum(avg.sum(axis=1, keepdims=True), 1e-12)
+        return avg.astype(np.float32)
