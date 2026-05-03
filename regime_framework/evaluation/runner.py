@@ -428,6 +428,22 @@ class BenchmarkRunner:
                         X_te, d_te,
                     )
 
+                # Per-fold feature importance: best classical predictor with
+                # native importance for THIS fold (skip NNs).
+                fold_classical = sorted(
+                    [r for r in fold_results
+                     if r.family == "classical" and not np.isnan(r.kappa)],
+                    key=lambda r: r.kappa, reverse=True,
+                )
+                for r in fold_classical:
+                    cand = next((p for p in predictors if p.name == r.name), None)
+                    if cand is not None and _has_native_importance(cand):
+                        self._print_and_save_importance(
+                            cand, X_te, y_te,
+                            suffix=f"{mode}_fold{fold_id+1}",
+                        )
+                        break
+
         if not per_fold_rows:
             console.print("[red]No folds produced — check min_train_fraction / data length[/red]")
             return None
@@ -867,7 +883,9 @@ class BenchmarkRunner:
         except Exception as e:
             console.print(f"      [yellow]plot save failed: {e}[/yellow]")
 
-    def _print_and_save_importance(self, predictor: BasePredictor, X_te, y_te) -> None:
+    def _print_and_save_importance(
+        self, predictor: BasePredictor, X_te, y_te, suffix: str = "",
+    ) -> None:
         try:
             with console.status(f"[cyan]Computing feature importance ({predictor.name})..."):
                 imp = predictor.feature_importances(X_te, y_te, n_repeats=3)
@@ -879,14 +897,16 @@ class BenchmarkRunner:
             return
 
         # Save full ranking
-        out_csv = RESULTS_DIR / f"feature_importance_{predictor.name}.csv"
+        sfx = f"_{suffix}" if suffix else ""
+        out_csv = RESULTS_DIR / f"feature_importance_{predictor.name}{sfx}.csv"
         imp_df = imp.reset_index().rename(columns={"index": "feature"})
         imp_df.columns = ["feature", "importance"]
         imp_df.to_csv(out_csv, index=False)
 
         top = imp.head(20)
         max_imp = float(top.iloc[0]) if len(top) and top.iloc[0] != 0 else 1.0
-        table = Table(title=f"Top 20 features — {predictor.name}")
+        title_sfx = f" ({suffix})" if suffix else ""
+        table = Table(title=f"Top 20 features — {predictor.name}{title_sfx}")
         table.add_column("rank", justify="right", style="dim")
         table.add_column("feature")
         table.add_column("importance", justify="right")
