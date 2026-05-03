@@ -31,7 +31,9 @@ def run(
     families: list[str] = typer.Option(
         ["classical", "rule_based", "deep_nets", "transformer", "pretrained"],
         "--family", "-f",
-        help="Predictor families to run. Repeat the flag for multiple values.",
+        help="Predictor families: classical, rule_based, deep_nets, transformer, pretrained. "
+             "Accepts repeated flags (-f classical -f rule_based) OR comma-separated "
+             "(-f classical,rule_based).",
     ),
     pretrained: list[str] | None = typer.Option(
         None, "--pretrained", "-p",
@@ -56,8 +58,19 @@ def run(
     ),
 ):
     """Run the full benchmark on a preset config."""
+    # Support both repeated -f and comma-separated lists
+    flat_families: list[str] = []
+    for f in families:
+        flat_families.extend([x.strip() for x in str(f).split(",") if x.strip()])
+    valid = {"classical", "rule_based", "deep_nets", "transformer", "pretrained"}
+    bad = [f for f in flat_families if f not in valid]
+    if bad:
+        raise typer.BadParameter(
+            f"Unknown family/families: {bad}. Valid: {sorted(valid)}"
+        )
+
     cfg = RunConfig.from_preset(preset)
-    cfg.predictors.families = list(families)
+    cfg.predictors.families = flat_families
     if skip_pretrained and "pretrained" in cfg.predictors.families:
         cfg.predictors.families.remove("pretrained")
     if pretrained:

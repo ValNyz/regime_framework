@@ -297,6 +297,12 @@ class BenchmarkRunner:
 
             baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
             predictors = _build_predictors(cfg)
+            if not predictors:
+                console.print(
+                    f"[red]No predictors built! Configured families: {cfg.predictors.families}. "
+                    f"Valid: classical, rule_based, deep_nets, transformer, pretrained.[/red]"
+                )
+                return None
             fold_results, _ = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
             )
