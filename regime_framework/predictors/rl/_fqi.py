@@ -1,0 +1,226 @@
+"""Generic Fitted Q Iteration (FQI) — regressor-agnostic.
+
+Classical batch RL (Ernst, Geurts, Wehenkel 2005). Workflow:
+
+1. Collect transitions {(s, a, r, s', done)} from all envs via a random
+   exploration policy (off-policy: any policy works for collection).
+2. Iterate K times:
+     For each transition (s, a, r, s', done):
+       target = r + γ · max_a' Q(s', a')   # γ * 0 if done
+     For each action a, fit a regressor on (s_train_a, target_train_a) —
+     one regressor per action.
+3. Use the final Q for predictions: argmax_a Q(s, a).
+
+The regressor type is provided by the caller via a factory. Same FQI loop
+works for LightGBM, XGBoost, CatBoost, sklearn GBM, etc. Skipped continuous:
+value-based, not actor-critic.
+
+LightGBM/XGBoost sklearn wrappers record feature_names_in_ on fit even with
+numpy input, which trips sklearn's "X does not have valid feature names"
+warning at every predict. We always wrap inputs in a DataFrame with stable
+column names (f0..fN-1) at both fit and predict — sklearn sees matching
+names at both ends and stays quiet.
+"""
+from __future__ import annotations
+
+from typing import Any, Callable
+
+import numpy as np
+import pandas as pd
+
+from .base import RLBasePredictor
+from .env import (
+    ACTION_DISCRETE_2,
+    ACTION_DISCRETE_3,
+)
+
+
+class _FQILearner:
+    """Per-action regressor of Q(s, a). The regressor class is supplied via
+    the `regressor_factory` callable — `_FQILearner` is agnostic to whether
+    it's LightGBM, XGBoost, sklearn GBM, etc.
+    """
+    def __init__(
+        self,
+        n_actions: int,
+        regressor_factory: Callable[[], Any],
+        gamma: float = 0.99,
+    ):
+        self.n_actions = int(n_actions)
+        self.gamma = float(gamma)
+        self._make_regressor = regressor_factory
+        self._models: list[Any] = [None] * self.n_actions
+        self._cols: list[str] | None = None  # set on first fit
+
+    def is_fitted(self) -> bool:
+        return all(m is not None for m in self._models)
+
+    def _as_df(self, arr: np.ndarray) -> pd.DataFrame:
+        """Wrap a numpy array in a DataFrame with stable column names."""
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if self._cols is None:
+            self._cols = [f"f{i}" for i in range(arr.shape[1])]
+        return pd.DataFrame(arr, columns=self._cols)
+
+    def q_values(self, state: np.ndarray) -> np.ndarray:
+        """Predict Q(state, a) for all actions. Returns 0 if not yet fitted."""
+        out = np.zeros(self.n_actions, dtype=np.float64)
+        df = self._as_df(state)
+        for a in range(self.n_actions):
+            if self._models[a] is not None:
+                out[a] = float(self._models[a].predict(df)[0])
+        return out
+
+    def q_values_batch(self, states: np.ndarray) -> np.ndarray:
+        """Batch version: returns (n_samples, n_actions) array."""
+        n = len(states)
+        out = np.zeros((n, self.n_actions), dtype=np.float64)
+        df = self._as_df(states)
+        for a in range(self.n_actions):
+            if self._models[a] is not None:
+                out[:, a] = self._models[a].predict(df)
+        return out
+
+    def fit_iteration(
+        self,
+        transitions: list[tuple],
+        n_iterations: int = 20,
+        progress_label: str | None = None,
+    ) -> None:
+        """One full FQI fit: K iterations of (compute targets → fit per-action)."""
+        if not transitions:
+            return
+        states = np.array([t[0] for t in transitions], dtype=np.float32)
+        actions = np.array([t[1] for t in transitions], dtype=np.int64)
+        rewards = np.array([t[2] for t in transitions], dtype=np.float32)
+        next_states = np.array([t[3] for t in transitions], dtype=np.float32)
+        dones = np.array([t[4] for t in transitions], dtype=bool)
+
+        for k in range(n_iterations):
+            if k == 0 and not self.is_fitted():
+                # Iteration 0 with no model: target = reward (assume Q(s', .) = 0)
+                next_q = np.zeros((len(transitions), self.n_actions))
+            else:
+                next_q = self.q_values_batch(next_states)
+            max_next_q = np.max(next_q, axis=1)
+            max_next_q[dones] = 0.0
+            targets = rewards + self.gamma * max_next_q
+
+            for a in range(self.n_actions):
+                mask = actions == a
+                if mask.sum() < 5:
+                    continue  # too few samples for this action
+                X_a = self._as_df(states[mask])
+                y_a = targets[mask]
+                model = self._make_regressor()
+                model.fit(X_a, y_a)
+                self._models[a] = model
+
+            if progress_label is not None and (
+                k == 0 or (k + 1) % max(1, n_iterations // 5) == 0 or k == n_iterations - 1
+            ):
+                mean_target = float(np.mean(targets))
+                print(
+                    f"      {progress_label} FQI iter {k+1}/{n_iterations} "
+                    f"target_mean={mean_target:+.4f}"
+                )
+
+    def select_action(self, state: np.ndarray) -> int:
+        if not self.is_fitted():
+            return int(np.random.randint(self.n_actions))
+        return int(np.argmax(self.q_values(state)))
+
+
+class _FQIRLBase(RLBasePredictor):
+    """Generic FQI predictor base. Subclasses override `_make_regressor`."""
+
+    def __init__(
+        self,
+        finetune: bool = False,
+        transaction_cost: float = 0.0,
+        flat_threshold: float = 0.05,
+        total_timesteps: int = 100000,  # used as transition budget
+        ft_steps_scale: float = 0.5,
+        gamma: float = 0.99,
+        iterations: int = 20,
+        seed: int = 42,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            finetune=finetune,
+            transaction_cost=transaction_cost,
+            flat_threshold=flat_threshold,
+            total_timesteps=total_timesteps,
+            ft_steps_scale=ft_steps_scale,
+        )
+        self.gamma = float(gamma)
+        self.iterations = int(iterations)
+        self.seed = int(seed)
+        self._learner: _FQILearner | None = None
+
+    def _make_regressor(self) -> Any:
+        """Return a fresh regressor instance. Override in subclasses."""
+        raise NotImplementedError
+
+    def _has_prior_state(self) -> bool:
+        return self._learner is not None and self._learner.is_fitted()
+
+    def _n_actions(self) -> int:
+        if self.action_space_type == ACTION_DISCRETE_2:
+            return 2
+        if self.action_space_type == ACTION_DISCRETE_3:
+            return 3
+        raise ValueError(
+            f"{self.approximator_kind}-FQI doesn't support {self.action_space_type}"
+        )
+
+    def _train_approximator(
+        self,
+        envs_data: list[tuple[np.ndarray, np.ndarray]],
+        total_timesteps: int,
+        warm: bool,
+    ) -> None:
+        np.random.seed(self.seed)
+        n_actions = self._n_actions()
+        if not warm or self._learner is None:
+            self._learner = _FQILearner(
+                n_actions=n_actions,
+                regressor_factory=self._make_regressor,
+                gamma=self.gamma,
+            )
+
+        # 1. Collect transitions from all envs via random exploration
+        envs = [self._build_env(f, c) for (f, c) in envs_data]
+        transitions: list[tuple] = []
+        steps_per_env = max(10, total_timesteps // len(envs))
+        print(
+            f"      {self.name} collecting transitions: "
+            f"{len(envs)} env(s) × {steps_per_env} steps = {len(envs)*steps_per_env}"
+        )
+        for env_idx, env in enumerate(envs):
+            obs, _ = env.reset()
+            for _ in range(steps_per_env):
+                # ε-greedy: if model fitted, exploit half the time; else random
+                if self._learner.is_fitted() and np.random.rand() > 0.5:
+                    action = self._learner.select_action(obs)
+                else:
+                    action = int(np.random.randint(n_actions))
+                next_obs, reward, terminated, _, _ = env.step(action)
+                transitions.append((obs.copy(), action, reward, next_obs.copy(), terminated))
+                if terminated:
+                    obs, _ = env.reset()
+                else:
+                    obs = next_obs
+            if len(envs) > 1:
+                print(f"      {self.name} env {env_idx+1}/{len(envs)} done ({steps_per_env} steps)")
+
+        # 2. FQI iterations on the collected transitions
+        self._learner.fit_iteration(
+            transitions, n_iterations=self.iterations, progress_label=self.name,
+        )
+
+    def _act(self, obs: np.ndarray):
+        if self._learner is None:
+            raise RuntimeError(f"{self.name}: predict() called before fit()")
+        return self._learner.select_action(obs)

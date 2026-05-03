@@ -107,6 +107,7 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             DQN2Predictor, DQN3Predictor, SACPredictor,
             LinearQ2Predictor, LinearQ3Predictor,
             LGBQ2Predictor, LGBQ3Predictor,
+            XGBQ2Predictor, XGBQ3Predictor,
         )
         rl_cfg = cfg.predictors.rl
         rl_shared = dict(
@@ -116,44 +117,40 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             ft_steps_scale=rl_cfg.ft_steps_scale,
             seed=cfg.seed,  # use the global seed (top-level seed: in YAML)
         )
-        # Map action_space → list of (cls, approximator-specific kwargs)
+        # Per-approximator hyperparam blocks — built once, reused across action spaces
+        nn_kw = dict(rl_shared,
+            learning_rate=rl_cfg.nn_learning_rate,
+            buffer_size=rl_cfg.nn_buffer_size,
+            gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
+            verbose=rl_cfg.nn_verbose)
+        linear_kw = dict(rl_shared,
+            learning_rate=rl_cfg.linear_learning_rate, gamma=rl_cfg.linear_gamma,
+            epsilon_start=rl_cfg.linear_epsilon_start,
+            epsilon_end=rl_cfg.linear_epsilon_end)
+        lgb_kw = dict(rl_shared,
+            n_estimators=rl_cfg.lgb_n_estimators, max_depth=rl_cfg.lgb_max_depth,
+            learning_rate=rl_cfg.lgb_learning_rate, gamma=rl_cfg.lgb_gamma,
+            iterations=rl_cfg.lgb_iterations)
+        xgb_kw = dict(rl_shared,
+            n_estimators=rl_cfg.xgb_n_estimators, max_depth=rl_cfg.xgb_max_depth,
+            learning_rate=rl_cfg.xgb_learning_rate, gamma=rl_cfg.xgb_gamma,
+            iterations=rl_cfg.xgb_iterations)
+        # Map action_space → list of (cls, kwargs)
         rl_classes = {
             "discrete-2": [
-                (DQN2Predictor, dict(rl_shared,
-                    learning_rate=rl_cfg.nn_learning_rate,
-                    buffer_size=rl_cfg.nn_buffer_size,
-                    gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
-                    verbose=rl_cfg.nn_verbose)),
-                (LinearQ2Predictor, dict(rl_shared,
-                    learning_rate=rl_cfg.linear_learning_rate, gamma=rl_cfg.linear_gamma,
-                    epsilon_start=rl_cfg.linear_epsilon_start,
-                    epsilon_end=rl_cfg.linear_epsilon_end)),
-                (LGBQ2Predictor, dict(rl_shared,
-                    n_estimators=rl_cfg.lgb_n_estimators, max_depth=rl_cfg.lgb_max_depth,
-                    learning_rate=rl_cfg.lgb_learning_rate, gamma=rl_cfg.lgb_gamma,
-                    iterations=rl_cfg.lgb_iterations)),
+                (DQN2Predictor, nn_kw),
+                (LinearQ2Predictor, linear_kw),
+                (LGBQ2Predictor, lgb_kw),
+                (XGBQ2Predictor, xgb_kw),
             ],
             "discrete-3": [
-                (DQN3Predictor, dict(rl_shared,
-                    learning_rate=rl_cfg.nn_learning_rate,
-                    buffer_size=rl_cfg.nn_buffer_size,
-                    gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
-                    verbose=rl_cfg.nn_verbose)),
-                (LinearQ3Predictor, dict(rl_shared,
-                    learning_rate=rl_cfg.linear_learning_rate, gamma=rl_cfg.linear_gamma,
-                    epsilon_start=rl_cfg.linear_epsilon_start,
-                    epsilon_end=rl_cfg.linear_epsilon_end)),
-                (LGBQ3Predictor, dict(rl_shared,
-                    n_estimators=rl_cfg.lgb_n_estimators, max_depth=rl_cfg.lgb_max_depth,
-                    learning_rate=rl_cfg.lgb_learning_rate, gamma=rl_cfg.lgb_gamma,
-                    iterations=rl_cfg.lgb_iterations)),
+                (DQN3Predictor, nn_kw),
+                (LinearQ3Predictor, linear_kw),
+                (LGBQ3Predictor, lgb_kw),
+                (XGBQ3Predictor, xgb_kw),
             ],
             "continuous": [
-                (SACPredictor, dict(rl_shared,
-                    learning_rate=rl_cfg.nn_learning_rate,
-                    buffer_size=rl_cfg.nn_buffer_size,
-                    gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
-                    verbose=rl_cfg.nn_verbose)),
+                (SACPredictor, nn_kw),
             ],
         }
         for action_space in rl_cfg.action_spaces:

@@ -1,6 +1,6 @@
 """Reinforcement learning predictors.
 
-Three approximators × multiple action spaces, all sharing the same
+Four approximators × multiple action spaces, all sharing the same
 RegimeTradingEnv and the framework's BasePredictor interface:
 
   Approximator | Action spaces             | Backend
@@ -8,10 +8,13 @@ RegimeTradingEnv and the framework's BasePredictor interface:
   NN           | Discrete-2/-3, Continuous | Stable-Baselines3
   Linear-Q     | Discrete-2/-3             | custom (no SB3)
   LightGBM-FQI | Discrete-2/-3             | custom (no SB3)
+  XGBoost-FQI  | Discrete-2/-3             | custom (no SB3)
 
-Continuous-action approximators are NN-only because Linear/LightGBM
-value-based RL doesn't extend cleanly to continuous actions (would
-require an actor-critic architecture, not just a Q-function).
+Continuous-action approximators are NN-only because the value-based
+approximators (Linear/LGB/XGB) don't extend cleanly to continuous
+actions (would require an actor-critic architecture, not just a
+Q-function). LGB and XGB share the same FQI loop (in `_fqi.py`) —
+they only differ in the per-action regressor.
 
 For continuous predictors, the policy outputs a signed position size
 in [-1, +1]. At predict-time, that position is projected back to the
@@ -40,6 +43,7 @@ from .base import RLBasePredictor
 from .nn import DQN2Predictor, DQN3Predictor, SACPredictor
 from .linear import LinearQ2Predictor, LinearQ3Predictor
 from .lgb import LGBQ2Predictor, LGBQ3Predictor
+from .xgb import XGBQ2Predictor, XGBQ3Predictor
 
 
 __all__ = [
@@ -58,4 +62,6 @@ __all__ = [
     "LinearQ3Predictor",
     "LGBQ2Predictor",
     "LGBQ3Predictor",
+    "XGBQ2Predictor",
+    "XGBQ3Predictor",
 ]

@@ -183,6 +183,11 @@ class RLConfig:
     lgb_learning_rate: float = 0.05
     lgb_gamma: float = 0.99
     lgb_iterations: int = 20
+    xgb_n_estimators: int = 200
+    xgb_max_depth: int = 6
+    xgb_learning_rate: float = 0.05
+    xgb_gamma: float = 0.99
+    xgb_iterations: int = 20
 
 
 def _extract_predictor_kwargs(d: dict) -> dict:
