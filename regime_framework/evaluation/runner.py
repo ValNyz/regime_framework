@@ -39,6 +39,19 @@ from .splits import time_aware_split, walk_forward_splits, leave_one_out_splits
 console = Console()
 
 
+def _has_native_importance(predictor: BasePredictor) -> bool:
+    """True iff predictor exposes cheap, native feature importance.
+
+    Native = sklearn-style `feature_importances_` (trees, GBDT) or `coef_`
+    (linear models). Excludes neural nets (MLP, GRU, LSTM, TST) which would
+    fall back to slow permutation importance.
+    """
+    clf = getattr(predictor, "clf", None)
+    if clf is None:
+        return False
+    return hasattr(clf, "feature_importances_") or hasattr(clf, "coef_")
+
+
 def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     """Instantiate all predictors enabled in the config."""
     out: list[BasePredictor] = []
@@ -223,10 +236,18 @@ class BenchmarkRunner:
                 self._save_fold_plot_multi(
                     cfg, df, "single", 0, per_predictor_predictions, X_te, d_te,
                 )
-            # Feature importance from the best predictor
-            best_obj = next((p for p in predictors if p.name == best.name), None)
-            if best_obj is not None:
-                self._print_and_save_importance(best_obj, X_te, y_te)
+            # Feature importance from the best CLASSICAL predictor with native
+            # importance (skip NNs — permutation is too slow and not native).
+            classical_ranked = sorted(
+                [r for r in results
+                 if r.family == "classical" and not np.isnan(r.kappa)],
+                key=lambda r: r.kappa, reverse=True,
+            )
+            for r in classical_ranked:
+                cand = next((p for p in predictors if p.name == r.name), None)
+                if cand is not None and _has_native_importance(cand):
+                    self._print_and_save_importance(cand, X_te, y_te)
+                    break
 
         return {
             "results": [r.__dict__ for r in results],
@@ -311,6 +332,11 @@ class BenchmarkRunner:
         # Keep ALL predictors' predictions per fold (used for the stitched plot
         # at the end, where we pick the predictor with the best MEAN kappa across folds).
         all_fold_preds: list[dict] = []
+        # Keep the LAST fold's trained predictor instances + its test set so we
+        # can query feature importance from the global best predictor at the end.
+        last_fold_predictors: list[BasePredictor] | None = None
+        last_fold_X_te = None
+        last_fold_y_te = None
 
         for train_idx, test_idx, fold_id in split_iter:
             X_tr = X.iloc[train_idx]
@@ -360,6 +386,10 @@ class BenchmarkRunner:
             fold_results, fold_predictions = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
             )
+            # Capture this fold's trained instances for end-of-CV importance query.
+            last_fold_predictors = predictors
+            last_fold_X_te = X_te
+            last_fold_y_te = y_te
 
             for r in fold_results:
                 per_fold_rows.append({
@@ -441,6 +471,26 @@ class BenchmarkRunner:
                 )
             except Exception as e:
                 console.print(f"[yellow]Stitched plot failed: {e}[/yellow]")
+
+        # Feature importance for the best CLASSICAL predictor with native
+        # importance (computed on the last fold's test set — that fold has
+        # the largest train window in walk-forward). Skip NNs.
+        if last_fold_predictors is not None and last_fold_X_te is not None:
+            classical_ranked = (
+                per_fold_df[per_fold_df["family"] == "classical"]
+                .groupby("predictor")["kappa"].mean()
+                .sort_values(ascending=False)
+            )
+            for cand_name in classical_ranked.index:
+                cand = next(
+                    (p for p in last_fold_predictors if p.name == cand_name),
+                    None,
+                )
+                if cand is not None and _has_native_importance(cand):
+                    self._print_and_save_importance(
+                        cand, last_fold_X_te, last_fold_y_te
+                    )
+                    break
 
         return per_fold_df
 
