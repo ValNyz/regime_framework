@@ -8,4 +8,5 @@ quote: USDT
 settle: USDT
 timeframe: 1h
 
-data_root: ~/regime_data
+features:
+  trading_signals_yaml: /home/portainer/workspace/crypto_comparative_analysis/configs/signals_p1p2_grid.yaml

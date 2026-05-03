@@ -11,7 +11,7 @@ settle: USDT
 timeframe: 1h
 
 # --- Where data lives (must be overridden by preset or per machine) ---
-data_root: ~/regime_data
+data_root: ~/workspace/hyperliquid_data/user_data/data
 
 # Optional cross-asset override — defaults to DEFAULT_CROSS map (BTC→ETH, HYPE→BTC, ...)
 # cross:
@@ -19,16 +19,17 @@ data_root: ~/regime_data
 
 # --- Labelling ---
 label:
-  method: trend_scan        # trend_scan | triple_barrier | drawdown
+  method: trend_scan # trend_scan | triple_barrier | drawdown
   L_range: [72, 120, 168, 240, 336, 480, 720, 1080]
   t_threshold: 0.0
+
   # Temporal hysteresis: 0 = no hysteresis (raw bar-by-bar trend-scan, noisy).
   # >0 = require N consecutive bars of strong opposite t-stat to switch regime.
   # 168 (7 days at 1h) eliminates intra-trend pullback flips on BTC.
   hysteresis_bars: 168
   strong_threshold: 2.0
-  horizon: 48               # used by triple_barrier only
-  alpha: 1.5                # used by triple_barrier only
+  horizon: 48 # used by triple_barrier only
+  alpha: 1.5 # used by triple_barrier only
 
 # --- Features ---
 features:
@@ -43,7 +44,7 @@ features:
 # --- Train/test split ---
 split:
   train_fraction: 0.80
-  purge_bars: null          # null → max(L_range)
+  purge_bars: null # null → max(L_range)
 
 # --- Predictors ---
 predictors:
@@ -61,7 +62,7 @@ predictors:
     # once you've installed their proprietary inference library.
     # - toto
   pretrained_modes: [zero_shot, fine_tuned]
-  fine_tune_head: logreg    # logreg | mlp
+  fine_tune_head: logreg # logreg | mlp
   forecast_horizon: 24
 
 # --- Multi-coin training (optional) ---
@@ -70,7 +71,8 @@ predictors:
 # alone is used for testing. A coin_id one-hot feature is added so the
 # classifier can learn coin-specific biases.
 training:
-  extra_coins: []          # e.g. [{target: ETH}, {target: SOL}, {target: BNB}]
+  extra_coins:
+    [{ target: ETH }, { target: SOL }, { target: BNB }, { target: XRP }]
   add_coin_id_feature: true
 
 seed: 42
