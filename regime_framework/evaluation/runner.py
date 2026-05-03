@@ -556,10 +556,20 @@ class BenchmarkRunner:
                 X_tr_stacked, y_tr_stacked, d_tr_stacked = self._stack_with_target(
                     cfg, X_tr, y_tr, d_tr,
                 )
-                # Filter extra-coin training data to bars BEFORE the fold's test start
-                # to prevent leakage (extra coins' future shouldn't be used to train fold k)
-                cutoff = d_te.iloc[0]
-                keep = d_tr_stacked < cutoff
+                # Date-window the stacked train set:
+                #   - rolling: clip extras to the SAME date range as target's
+                #     fold window [d_tr_start, d_tr_end] so the rolling-window
+                #     philosophy applies across all coins (constant span).
+                #   - other modes (expanding / LOO): clip extras to bars BEFORE
+                #     the test cutoff (no leakage); extras may span much more
+                #     history than target since target's d_tr expands too.
+                if mode == "rolling" and len(d_tr) >= 2:
+                    d_start = d_tr.iloc[0]
+                    d_end = d_tr.iloc[-1]
+                    keep = (d_tr_stacked >= d_start) & (d_tr_stacked <= d_end)
+                else:
+                    cutoff = d_te.iloc[0]
+                    keep = d_tr_stacked < cutoff
                 X_tr_stacked = X_tr_stacked.loc[keep].reset_index(drop=True)
                 y_tr_stacked = y_tr_stacked.loc[keep].reset_index(drop=True)
                 d_tr_stacked = d_tr_stacked.loc[keep].reset_index(drop=True)
@@ -1167,7 +1177,9 @@ class BenchmarkRunner:
         split_dt = d_te.iloc[0]
         try:
             _plot_A(df, runs, out_dir / f"A_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
-            _plot_B(df, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
+            # _plot_B takes (raw_labels, smooth, runs) — raw drives the equity
+            # curve (matches synth_gain metric), smooth drives the regime bands.
+            _plot_B(df, out, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
             _plot_C(df, smooth, runs, out_dir / f"C_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
             console.print(
                 f"      [dim]plots saved: A/B/C_pred_{mode}_fold{fold_id+1}.png "
