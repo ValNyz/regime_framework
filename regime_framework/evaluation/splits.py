@@ -71,6 +71,58 @@ def leave_one_out_splits(
         yield train_idx, test_idx, k
 
 
+def rolling_walk_forward_splits(
+    n: int,
+    train_window_bars: int,
+    test_window_bars: int,
+    purge_bars: int = 0,
+    step_bars: int | None = None,
+) -> Iterator[tuple[np.ndarray, np.ndarray, int]]:
+    """Yield (train_idx, test_idx, fold_id) for sliding fixed-size folds.
+
+    Layout (vs walk_forward_splits which is expanding):
+      | train_0 (W bars) | purge | test_0 (T bars) |   step S
+                                                    \\____
+      | train_1 (W bars, slid by S) | purge | test_1 (T bars) |
+      ...
+
+    At fold k:
+      train spans bars [k*S, k*S + W)
+      test  spans bars [k*S + W + purge, k*S + W + purge + T)
+      step S defaults to T (non-overlapping consecutive test windows).
+
+    The fixed train width W means every fold has the same training set size —
+    the model is always trained on the most recent W bars before its test.
+    Useful for non-stationary regimes (e.g. crypto): models see recent data
+    only, no contamination from years-old market structure.
+
+    Args:
+        n: total number of bars
+        train_window_bars: W — fixed-size training window
+        test_window_bars: T — fixed-size test window
+        purge_bars: gap between train end and test start
+        step_bars: S — slide step between consecutive folds. None = T (consecutive).
+
+    Total folds: max(0, (n - W - purge - T) // S + 1)
+    """
+    if train_window_bars <= 0 or test_window_bars <= 0:
+        return
+    step = step_bars if step_bars is not None else test_window_bars
+    if step <= 0:
+        return
+    fold_id = 0
+    start = 0
+    while start + train_window_bars + purge_bars + test_window_bars <= n:
+        train_end = start + train_window_bars
+        test_start = train_end + purge_bars
+        test_end = test_start + test_window_bars
+        train_idx = np.arange(start, train_end)
+        test_idx = np.arange(test_start, test_end)
+        yield train_idx, test_idx, fold_id
+        fold_id += 1
+        start += step
+
+
 def walk_forward_splits(
     n: int,
     n_folds: int = 5,

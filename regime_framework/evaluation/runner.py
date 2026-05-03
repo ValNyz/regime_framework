@@ -34,7 +34,10 @@ from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
 from ..visualization.regime_plots import save_label_plots, save_prediction_plots
 from .metrics import evaluate
-from .splits import time_aware_split, walk_forward_splits, leave_one_out_splits
+from .splits import (
+    time_aware_split, walk_forward_splits, leave_one_out_splits,
+    rolling_walk_forward_splits,
+)
 
 
 console = Console()
@@ -427,7 +430,10 @@ class BenchmarkRunner:
 
     def _run_cv(self, cfg, df, X, y, dates, purge: int) -> dict:
         n_folds = int(cfg.split.cv_folds)
-        modes = ["walk_forward", "leave_one_out"] if cfg.split.cv_mode == "both" else [cfg.split.cv_mode]
+        if cfg.split.cv_mode == "both":
+            modes = ["walk_forward", "leave_one_out"]
+        else:
+            modes = [cfg.split.cv_mode]
 
         all_aggr: dict[str, pd.DataFrame] = {}
         for mode in modes:
@@ -447,6 +453,31 @@ class BenchmarkRunner:
                 f"\n[bold]Leave-one-out CV[/bold] — {n_folds} folds, purge={purge} bars on each side"
             )
             split_iter = leave_one_out_splits(n=len(X), n_folds=n_folds, purge_bars=purge)
+        elif mode == "rolling":
+            tw = int(cfg.split.train_window_bars)
+            te = int(cfg.split.test_window_bars)
+            step = int(cfg.split.step_bars) or te
+            if tw <= 0 or te <= 0:
+                console.print(
+                    f"[red]rolling CV requires train_window_bars and test_window_bars > 0 "
+                    f"(got tw={tw}, te={te})[/red]"
+                )
+                return None
+            # Estimate fold count for the header line.
+            est_folds = max(0, (len(X) - tw - purge - te) // step + 1)
+            console.print(
+                f"\n[bold]Rolling-window CV[/bold] — train={tw} bars, test={te} bars, "
+                f"step={step} bars, purge={purge}, est. {est_folds} folds"
+            )
+            split_iter = rolling_walk_forward_splits(
+                n=len(X),
+                train_window_bars=tw,
+                test_window_bars=te,
+                purge_bars=purge,
+                step_bars=step,
+            )
+            # Override n_folds for the per-fold rule print downstream.
+            n_folds = est_folds
         else:
             console.print(
                 f"\n[bold]Walk-forward CV[/bold] — {n_folds} folds, "

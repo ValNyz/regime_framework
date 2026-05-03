@@ -104,10 +104,18 @@ class SplitConfig:
     train_fraction: float = 0.80
     purge_bars: int | None = None        # if None, defaults to max(L_range)
     cv_folds: int = 0                    # 0 = single split; >0 = K-fold CV
-    cv_mode: str = "walk_forward"        # "walk_forward" | "leave_one_out"
+    cv_mode: str = "walk_forward"        # "walk_forward" (expanding) | "leave_one_out"
+                                         # | "rolling" (fixed-window sliding) | "both"
     min_train_fraction: float = 0.40     # walk-forward: fold-0 train size
     # Backward-compat alias (older configs may still use this)
     walk_forward_folds: int = 0
+    # Rolling-window CV (cv_mode = "rolling"). Train on a fixed-size past
+    # window, test on the next test_window_bars, slide forward by step_bars.
+    # Bars depend on timeframe — at 1h: 1 month ≈ 730, 6 months ≈ 4380.
+    # cv_folds is ignored in rolling mode (fold count = how many fit between).
+    train_window_bars: int = 0           # 0 = required for rolling mode
+    test_window_bars: int = 0            # 0 = required for rolling mode
+    step_bars: int = 0                   # 0 = defaults to test_window_bars
 
 
 @dataclass
