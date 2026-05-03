@@ -1,20 +1,22 @@
 """Reinforcement learning predictors.
 
-Four approximators × multiple action spaces, all sharing the same
+Six approximators × multiple action spaces, all sharing the same
 RegimeTradingEnv and the framework's BasePredictor interface:
 
-  Approximator | Action spaces             | Backend
-  -------------|---------------------------|------------------
-  NN           | Discrete-2/-3, Continuous | Stable-Baselines3
-  Linear-Q     | Discrete-2/-3             | custom (no SB3)
-  LightGBM-FQI | Discrete-2/-3             | custom (no SB3)
-  XGBoost-FQI  | Discrete-2/-3             | custom (no SB3)
+  Approximator   | Action spaces             | Backend
+  ---------------|---------------------------|------------------
+  NN             | Discrete-2/-3, Continuous | Stable-Baselines3
+  Linear-Q       | Discrete-2/-3             | custom (online TD)
+  LightGBM-FQI   | Discrete-2/-3             | sklearn-FQI
+  XGBoost-FQI    | Discrete-2/-3             | sklearn-FQI
+  RandomForest-FQI | Discrete-2/-3           | sklearn-FQI
+  Ridge-FQI      | Discrete-2/-3             | sklearn-FQI (closed-form linear)
 
 Continuous-action approximators are NN-only because the value-based
-approximators (Linear/LGB/XGB) don't extend cleanly to continuous
-actions (would require an actor-critic architecture, not just a
-Q-function). LGB and XGB share the same FQI loop (in `_fqi.py`) —
-they only differ in the per-action regressor.
+approximators don't extend cleanly to continuous actions (would
+require an actor-critic architecture, not just a Q-function). All four
+sklearn-based approximators share the same FQI loop (in `_fqi.py`) —
+they only differ in the per-action regressor factory.
 
 For continuous predictors, the policy outputs a signed position size
 in [-1, +1]. At predict-time, that position is projected back to the
@@ -44,6 +46,8 @@ from .nn import DQN2Predictor, DQN3Predictor, SACPredictor
 from .linear import LinearQ2Predictor, LinearQ3Predictor
 from .lgb import LGBQ2Predictor, LGBQ3Predictor
 from .xgb import XGBQ2Predictor, XGBQ3Predictor
+from .rf import RFQ2Predictor, RFQ3Predictor
+from .ridge import RidgeQ2Predictor, RidgeQ3Predictor
 
 
 __all__ = [
@@ -64,4 +68,8 @@ __all__ = [
     "LGBQ3Predictor",
     "XGBQ2Predictor",
     "XGBQ3Predictor",
+    "RFQ2Predictor",
+    "RFQ3Predictor",
+    "RidgeQ2Predictor",
+    "RidgeQ3Predictor",
 ]

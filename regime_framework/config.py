@@ -188,6 +188,14 @@ class RLConfig:
     xgb_learning_rate: float = 0.05
     xgb_gamma: float = 0.99
     xgb_iterations: int = 20
+    rf_n_estimators: int = 200
+    rf_max_depth: int | None = None      # None = unlimited (sklearn default)
+    rf_min_samples_leaf: int = 1
+    rf_gamma: float = 0.99
+    rf_iterations: int = 20
+    ridge_alpha: float = 1.0             # L2 regularization strength
+    ridge_gamma: float = 0.99
+    ridge_iterations: int = 20
 
 
 def _extract_predictor_kwargs(d: dict) -> dict:

@@ -108,6 +108,8 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             LinearQ2Predictor, LinearQ3Predictor,
             LGBQ2Predictor, LGBQ3Predictor,
             XGBQ2Predictor, XGBQ3Predictor,
+            RFQ2Predictor, RFQ3Predictor,
+            RidgeQ2Predictor, RidgeQ3Predictor,
         )
         rl_cfg = cfg.predictors.rl
         rl_shared = dict(
@@ -135,6 +137,13 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             n_estimators=rl_cfg.xgb_n_estimators, max_depth=rl_cfg.xgb_max_depth,
             learning_rate=rl_cfg.xgb_learning_rate, gamma=rl_cfg.xgb_gamma,
             iterations=rl_cfg.xgb_iterations)
+        rf_kw = dict(rl_shared,
+            n_estimators=rl_cfg.rf_n_estimators, max_depth=rl_cfg.rf_max_depth,
+            min_samples_leaf=rl_cfg.rf_min_samples_leaf, gamma=rl_cfg.rf_gamma,
+            iterations=rl_cfg.rf_iterations)
+        ridge_kw = dict(rl_shared,
+            alpha=rl_cfg.ridge_alpha, gamma=rl_cfg.ridge_gamma,
+            iterations=rl_cfg.ridge_iterations)
         # Map action_space → list of (cls, kwargs)
         rl_classes = {
             "discrete-2": [
@@ -142,12 +151,16 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 (LinearQ2Predictor, linear_kw),
                 (LGBQ2Predictor, lgb_kw),
                 (XGBQ2Predictor, xgb_kw),
+                (RFQ2Predictor, rf_kw),
+                (RidgeQ2Predictor, ridge_kw),
             ],
             "discrete-3": [
                 (DQN3Predictor, nn_kw),
                 (LinearQ3Predictor, linear_kw),
                 (LGBQ3Predictor, lgb_kw),
                 (XGBQ3Predictor, xgb_kw),
+                (RFQ3Predictor, rf_kw),
+                (RidgeQ3Predictor, ridge_kw),
             ],
             "continuous": [
                 (SACPredictor, nn_kw),
