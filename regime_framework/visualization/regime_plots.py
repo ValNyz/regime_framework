@@ -387,15 +387,23 @@ def plot_regime_step_multi(
     plt.close(fig)
 
 
-def save_label_plots(df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: RunConfig) -> None:
+def save_label_plots(
+    df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: RunConfig,
+    xlim_dates: tuple | None = None,
+) -> None:
+    """Save label A/B plots. xlim_dates: optional (start, end) — clamps the
+    X-axis to a specific window. Used to align label plots' OOS window with
+    the prediction plots (so B_labels_synth.png shows the 'perfect-regime
+    trader' equity over exactly the same period as the predictor plots).
+    """
     smooth = denoise_labels(labels, window=168)
     runs = _compute_runs(df, smooth)
     suffix = f"labels-{cfg.target}-{cfg.timeframe}"
-    # No labels=… arg → no auto-zoom (full dataset view, intended for label plots).
-    _plot_A(df, runs, out_dir / "A_labels_background.png", suffix)
+    _plot_A(df, runs, out_dir / "A_labels_background.png", suffix,
+            xlim_dates=xlim_dates)
     # Equity uses raw labels (matches metric); regime bands use smoothed.
-    # raw_labels covers the whole range so _maybe_zoom is a no-op here.
-    _plot_B(df, labels, smooth, runs, out_dir / "B_labels_synth.png", suffix)
+    _plot_B(df, labels, smooth, runs, out_dir / "B_labels_synth.png", suffix,
+            xlim_dates=xlim_dates)
 
 
 def save_prediction_plots(

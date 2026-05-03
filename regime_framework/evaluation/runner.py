@@ -194,11 +194,11 @@ class BenchmarkRunner:
         for k, v in counts.items():
             console.print(f"  {k:8s} {v:>8d}  ({100*v/counts.sum():.1f}%)")
         self.labels = labels
-
-        # ----- 3. Save label plots immediately -----
-        if cfg.plots.enabled:
-            console.print("[bold]Saving label plots[/bold]")
-            save_label_plots(df, labels, PLOTS_DIR, cfg)
+        # Defer label plots until we know the OOS span (computed in
+        # _run_cv_single_mode / _run_single_split after fold materialization).
+        # This lets B_labels_synth.png clamp to the OOS window for direct
+        # visual comparison with the prediction plots.
+        self._label_plots_saved = False
 
         # ----- 4. Features -----
         console.print("[bold]Computing features[/bold]")
@@ -262,6 +262,14 @@ class BenchmarkRunner:
             f"  Test : {len(X_te):>6} bars ({d_te.iloc[0].date()} → {d_te.iloc[-1].date()})"
         )
         console.print(f"  Purge gap: {purge} bars")
+
+        # Save label plots clamped to the test (OOS) span — same X-axis as
+        # the prediction plots for direct visual comparison.
+        if cfg.plots.enabled and not getattr(self, "_label_plots_saved", False):
+            console.print("[bold]Saving label plots[/bold]")
+            oos_span = (pd.to_datetime(d_te.iloc[0]), pd.to_datetime(d_te.iloc[-1]))
+            save_label_plots(df, labels, PLOTS_DIR, cfg, xlim_dates=oos_span)
+            self._label_plots_saved = True
 
         console.print("[bold]Signal analysis (lift + MI on train)[/bold]")
         try:
@@ -536,6 +544,15 @@ class BenchmarkRunner:
                 pd.to_datetime(df.loc[last_test_idx, "date"]),
             )
         split_iter = iter(all_fold_list)
+
+        # Save label plots NOW — once per run — clamped to the OOS span.
+        # This gives B_labels_synth.png the same X-axis as the prediction
+        # plots, making them directly visually comparable. Skipped when
+        # plots are disabled or when this is the second mode of cv_mode=both.
+        if cfg.plots.enabled and not getattr(self, "_label_plots_saved", False):
+            console.print("[bold]Saving label plots[/bold]")
+            save_label_plots(df, self.labels, PLOTS_DIR, cfg, xlim_dates=oos_span_dates)
+            self._label_plots_saved = True
 
         # Build predictors ONCE before the fold loop so FT instances retain
         # their state (booster / model weights / forest) across folds. Cold
