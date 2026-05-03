@@ -42,6 +42,11 @@ all-pretrained = [
     "uni2ts",
     "gluonts",
 ]
+# Reinforcement learning predictors (NN approximator via SB3).
+# Linear-Q and LightGBM-FQI variants don't need SB3 — they're implemented
+# from scratch in regime_framework/predictors/rl/. Install this extra to
+# enable the NN-based DQN / SAC predictors.
+rl = ["stable-baselines3>=2.0", "gymnasium>=0.29"]
 
 [project.scripts]
 regime-run = "regime_framework.cli:main"
