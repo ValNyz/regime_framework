@@ -121,9 +121,26 @@ class BasePretrainedPredictor(BasePredictor):
         if not self._supports_embedding:
             raise RuntimeError(f"{self.name} does not support embedding extraction")
         self._ensure_model()
+        if df is None or "close" not in df.columns:
+            raise ValueError(
+                f"{self.name} _embed_series: df missing 'close' column"
+            )
         close = df["close"].to_numpy(dtype=np.float64)
         n = len(close)
+        if n <= self.context_len:
+            raise ValueError(
+                f"{self.name} _embed_series: only {n} bars provided but context_len="
+                f"{self.context_len} required. In multi-coin training mode the runner "
+                f"sets df_train empty (no single price series across stacked coins) — "
+                f"pretrained fine_tuned predictors are not compatible with multi-coin "
+                f"runs. Disable them via cfg.predictors.disabled or use a non-multi-coin run."
+            )
         idxs = list(range(self.context_len, n, self.embed_subsample))
+        if not idxs:
+            raise ValueError(
+                f"{self.name} _embed_series: no embedding indices generated "
+                f"(n={n}, context_len={self.context_len}, step={self.embed_subsample})"
+            )
         embs = []
         for t in tqdm(idxs, desc=f"      {self.name}-emb", leave=False):
             ctx = close[t - self.context_len : t]
