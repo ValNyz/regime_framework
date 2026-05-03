@@ -722,10 +722,24 @@ class BenchmarkRunner:
                 X_tr, y_tr, d_tr = X_tr_stacked, y_tr_stacked, d_tr_stacked
                 df_tr = df.iloc[:0]
 
+            # Compute buy-and-hold over the test slice up-front so we can show
+            # it in the fold header — gives a quick sense of which way the
+            # market moved before any predictor ran.
+            from .metrics import buy_and_hold_gain
+            _closes_te = (
+                np.asarray(df_te["close"].values, dtype=np.float64)
+                if "close" in df_te.columns else None
+            )
+            bh_gain_fold = (
+                buy_and_hold_gain(_closes_te) if _closes_te is not None else float("nan")
+            )
+            bh_str = f"{bh_gain_fold*100:+.1f}%" if not np.isnan(bh_gain_fold) else "nan"
+
             console.rule(
                 f"[bold cyan]Fold {fold_id+1}/{n_folds} ({mode}): "
                 f"train={len(X_tr)} | "
-                f"test={len(X_te)} ({d_te.iloc[0].date()}→{d_te.iloc[-1].date()})"
+                f"test={len(X_te)} ({d_te.iloc[0].date()}→{d_te.iloc[-1].date()}) "
+                f"| B&H={bh_str}"
             )
 
             baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
@@ -750,14 +764,11 @@ class BenchmarkRunner:
             last_fold_X_te = X_te
             last_fold_y_te = y_te
 
-            # Per-fold buy-and-hold reference (same for every predictor in
-            # this fold — depends only on prices over the test slice).
-            from .metrics import buy_and_hold_gain, synth_gain_by_month
-            closes_te_arr = (
-                np.asarray(df_te["close"].values, dtype=np.float64)
-                if "close" in df_te.columns else None
-            )
-            bh_gain_fold = buy_and_hold_gain(closes_te_arr) if closes_te_arr is not None else float("nan")
+            # bh_gain_fold + closes were already computed for the fold header
+            # above — reuse them here. Synth-gain monthly bucketing imports
+            # land lazily here since not every fold path needs them.
+            from .metrics import synth_gain_by_month
+            closes_te_arr = _closes_te
 
             for r in fold_results:
                 per_fold_rows.append({
