@@ -380,9 +380,13 @@ class BenchmarkRunner:
             )
             results.append(res)
             per_predictor_predictions[predictor.name] = pred_arr
+            dk_str = (
+                f"{res.dir_kappa:+.3f}" if not np.isnan(res.dir_kappa) else "  nan"
+            )
             console.print(
                 f"  [green]✔[/green] {predictor.name:35s} "
-                f"acc={res.accuracy:.3f} κ={res.kappa:+.3f} F1={res.f1_macro:.3f} "
+                f"acc={res.accuracy:.3f} κ={res.kappa:+.3f} dκ={dk_str} "
+                f"F1={res.f1_macro:.3f} "
                 f"gain={res.synth_gain*100:+.1f}% ({res.metadata['elapsed_sec']}s)"
             )
 
@@ -1000,6 +1004,7 @@ class BenchmarkRunner:
         table.add_column("family")
         table.add_column("acc", justify="right")
         table.add_column("κ", justify="right")
+        table.add_column("dir-κ", justify="right")
         table.add_column("F1", justify="right")
         table.add_column("gain", justify="right")
         table.add_column("vs_BH", justify="right")
@@ -1007,11 +1012,11 @@ class BenchmarkRunner:
         table.add_column("elapsed", justify="right")
         # baseline row
         table.add_row("--", "[dim]baseline[/dim]", "--",
-                      f"{baseline_acc:.3f}", "0.000", "--", "--", "--", "--", "--")
+                      f"{baseline_acc:.3f}", "0.000", "--", "--", "--", "--", "--", "--")
         # buy-and-hold reference
         if not np.isnan(bh_gain):
             table.add_row("--", "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
-                          "--", "--", "--",
+                          "--", "--", "--", "--",
                           f"[dim]{bh_gain*100:+.1f}%[/dim]", "[dim]0.0%[/dim]",
                           "--", "--")
         for i, r in enumerate(ordered, 1):
@@ -1023,6 +1028,7 @@ class BenchmarkRunner:
             elif r.kappa < 0:
                 color = "red"
             kappa_str = f"[{color}]{r.kappa:+.3f}[/{color}]" if color else f"{r.kappa:+.3f}"
+            dk_str = f"{r.dir_kappa:+.3f}" if not np.isnan(r.dir_kappa) else "--"
             gain_str = f"{r.synth_gain*100:+.1f}%" if not np.isnan(r.synth_gain) else "--"
             if not np.isnan(r.synth_gain) and not np.isnan(bh_gain):
                 vs_bh = r.synth_gain - bh_gain
@@ -1034,6 +1040,7 @@ class BenchmarkRunner:
                 str(i), r.name, r.family,
                 f"{r.accuracy:.3f}",
                 kappa_str,
+                dk_str,
                 f"{r.f1_macro:.3f}",
                 gain_str, vs_bh_str,
                 str(r.n_test),
@@ -1312,6 +1319,7 @@ class BenchmarkRunner:
             {
                 "name": r.name, "family": r.family,
                 "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
+                "dir_kappa": r.dir_kappa,
                 "synth_gain": r.synth_gain,
                 "n_test": r.n_test,
                 "elapsed_sec": r.metadata.get("elapsed_sec", 0),
