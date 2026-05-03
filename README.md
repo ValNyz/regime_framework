@@ -40,7 +40,8 @@ Each foundation model needs its own package — install only what you'll run:
 
 ```bash
 pip install chronos-forecasting       # Chronos-Bolt-Base + Chronos-T5-Large
-pip install 'timesfm[torch]'          # TimesFM-2.0 (PyTorch backend, works on Py3.12)
+# TimesFM-2.0 — install from git (the PyPI 1.0 is JAX-only, broken on Py3.12):
+pip install 'timesfm[torch] @ git+https://github.com/google-research/timesfm.git'
 pip install uni2ts                    # MOIRAI + MOIRAI-MoE
 pip install gluonts                 # required by Lag-Llama
 pip install git+https://github.com/time-series-foundation-models/lag-llama

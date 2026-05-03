@@ -22,26 +22,34 @@ class TimesFMPredictor(BasePretrainedPredictor):
     _supports_embedding = False
 
     def _load_model(self) -> None:
-        # Try the modern torch API first (preferred)
-        try:
-            from timesfm import TimesFm_2p0_500M_torch
-            self._model = TimesFm_2p0_500M_torch.from_pretrained(self.MODEL_ID)
-            self._api = "torch_v2"
-            return
-        except ImportError:
-            pass
-        except Exception:
-            pass
+        # Try modern torch entry points (PyPI 'timesfm' 1.0 is JAX-only and broken
+        # on Py3.12 — install from git for the torch backend).
+        for entry_path in (
+            ("timesfm", "TimesFm_2p0_500M_torch"),
+            ("timesfm.timesfm_torch", "TimesFmTorch"),
+            ("timesfm.torch", "TimesFmTorch"),
+        ):
+            try:
+                mod = __import__(entry_path[0], fromlist=[entry_path[1]])
+                cls = getattr(mod, entry_path[1])
+                self._model = cls.from_pretrained(self.MODEL_ID)
+                self._api = "torch_v2"
+                return
+            except (ImportError, AttributeError):
+                continue
+            except Exception:
+                continue
 
-        # Fallback: legacy JAX API (timesfm 1.0)
+        # Fallback: legacy JAX API (timesfm 1.0 on Python <3.12)
         try:
-            import timesfm  # noqa: F401
             from timesfm import TimesFm, TimesFmHparams, TimesFmCheckpoint
         except ImportError as e:
             raise ImportError(
-                "timesfm not installed. Run: `pip install timesfm[torch]` "
-                "(preferred — works on Python 3.12) or `pip install timesfm` "
-                "(legacy JAX, Python <3.12 only)."
+                "timesfm torch backend not available. The PyPI 'timesfm' package "
+                "is JAX-only and incompatible with Python 3.12. Install the torch "
+                "backend from git:\n"
+                "  pip install 'timesfm[torch] @ git+https://github.com/google-research/timesfm.git'\n"
+                "If that fails on your env, skip TimesFM with --pretrained chronos_bolt_base ..."
             ) from e
 
         backend = "gpu" if self.device_str == "cuda" else "cpu"

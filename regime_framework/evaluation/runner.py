@@ -22,7 +22,7 @@ from ..labels import get_labeller
 from ..features.pipeline import FeaturePipeline
 from ..predictors.base import BasePredictor, PredictionResult
 from ..predictors.classical import (
-    LogRegPredictor, RandomForestPredictor, GBMPredictor, MLPPredictor, XGBoostPredictor,
+    LogRegPredictor, RandomForestPredictor, MLPPredictor, XGBoostPredictor,
 )
 from ..predictors.rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
 from ..predictors.deep_nets import DeepMLPPredictor, GRUPredictor, LSTMPredictor
@@ -46,7 +46,6 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         out += [
             LogRegPredictor(),
             RandomForestPredictor(),
-            GBMPredictor(),
             MLPPredictor(),
             XGBoostPredictor(),
         ]

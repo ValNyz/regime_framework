@@ -2,7 +2,7 @@ from .base import BasePredictor, PredictionResult
 from .classical import (
     LogRegPredictor,
     RandomForestPredictor,
-    GBMPredictor,
+    GBMPredictor,           # kept importable but no longer auto-registered
     MLPPredictor,
     XGBoostPredictor,
 )
