@@ -110,6 +110,9 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             XGBQ2Predictor, XGBQ3Predictor,
             RFQ2Predictor, RFQ3Predictor,
             RidgeQ2Predictor, RidgeQ3Predictor,
+            HuberQ2Predictor, HuberQ3Predictor,
+            HistGBQ2Predictor, HistGBQ3Predictor,
+            CatQ2Predictor, CatQ3Predictor,
         )
         rl_cfg = cfg.predictors.rl
         # Shared kwargs (every approximator gets these). total_timesteps is
@@ -149,6 +152,20 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         ridge_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.ridge_total_timesteps),
             alpha=rl_cfg.ridge_alpha, gamma=rl_cfg.ridge_gamma,
             iterations=rl_cfg.ridge_iterations)
+        huber_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.huber_total_timesteps),
+            alpha=rl_cfg.huber_alpha, epsilon=rl_cfg.huber_epsilon,
+            max_iter=rl_cfg.huber_max_iter, gamma=rl_cfg.huber_gamma,
+            iterations=rl_cfg.huber_iterations)
+        histgb_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.histgb_total_timesteps),
+            max_iter=rl_cfg.histgb_max_iter, max_depth=rl_cfg.histgb_max_depth,
+            learning_rate=rl_cfg.histgb_learning_rate,
+            min_samples_leaf=rl_cfg.histgb_min_samples_leaf,
+            l2_regularization=rl_cfg.histgb_l2_regularization,
+            gamma=rl_cfg.histgb_gamma, iterations=rl_cfg.histgb_iterations)
+        cat_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.cat_total_timesteps),
+            n_estimators=rl_cfg.cat_n_estimators, max_depth=rl_cfg.cat_max_depth,
+            learning_rate=rl_cfg.cat_learning_rate, l2_leaf_reg=rl_cfg.cat_l2_leaf_reg,
+            gamma=rl_cfg.cat_gamma, iterations=rl_cfg.cat_iterations)
         # Map action_space → list of (cls, kwargs)
         rl_classes = {
             "discrete-2": [
@@ -158,6 +175,9 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 (XGBQ2Predictor, xgb_kw),
                 (RFQ2Predictor, rf_kw),
                 (RidgeQ2Predictor, ridge_kw),
+                (HuberQ2Predictor, huber_kw),
+                (HistGBQ2Predictor, histgb_kw),
+                (CatQ2Predictor, cat_kw),
             ],
             "discrete-3": [
                 (DQN3Predictor, nn_kw),
@@ -166,6 +186,9 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 (XGBQ3Predictor, xgb_kw),
                 (RFQ3Predictor, rf_kw),
                 (RidgeQ3Predictor, ridge_kw),
+                (HuberQ3Predictor, huber_kw),
+                (HistGBQ3Predictor, histgb_kw),
+                (CatQ3Predictor, cat_kw),
             ],
             "continuous": [
                 (SACPredictor, nn_kw),
@@ -809,20 +832,14 @@ class BenchmarkRunner:
                 if getattr(p, "is_ensemble", False):
                     p.update_prior_kappas(base_kappas)
 
-            # Save multi-overlay plot per fold (shows all predictors).
             # Single-best per-fold plot is deferred to AFTER the loop so we can
             # use the GLOBAL top-1 predictor (by --rank-by) on every fold,
             # consistent with the stitched plot.
-            if fold_results and cfg.plots.enabled and cfg.plots.per_fold:
-                if len(fold_predictions) > 1:
-                    self._save_fold_plot_multi(
-                        cfg, df, mode, fold_id, fold_predictions,
-                        X_te, d_te,
-                        xlim_dates=oos_span_dates,
-                    )
-                # Keep ALL predictors' predictions for this fold — used to
-                # build the stitched plot using the GLOBAL best predictor and
-                # for the deferred per-fold _save_fold_plot pass below.
+            if fold_results and cfg.plots.enabled:
+                # Always accumulate fold predictions when plots are enabled —
+                # the stitched OOS plot uses this regardless of per_fold.
+                # Previously this was nested inside the per_fold gate, which
+                # silently disabled the stitched plot when per_fold=false.
                 all_fold_preds.append({
                     "fold_id": fold_id,
                     "test_index": X_te.index,
@@ -832,22 +849,30 @@ class BenchmarkRunner:
                     "fold_results": list(fold_results),
                 })
 
-                # Per-fold feature importance: best classical predictor with
-                # native importance for THIS fold (skip NNs).
-                if cfg.predictors.feature_importance:
-                    fold_classical = sorted(
-                        [r for r in fold_results
-                         if r.family == "classical" and not np.isnan(r.kappa)],
-                        key=lambda r: r.kappa, reverse=True,
-                    )
-                    for r in fold_classical:
-                        cand = next((p for p in predictors if p.name == r.name), None)
-                        if cand is not None and _has_native_importance(cand):
-                            self._print_and_save_importance(
-                                cand, X_te, y_te,
-                                suffix=f"{mode}_fold{fold_id+1}",
-                            )
-                            break
+                # Per-fold-only outputs: multi-overlay plot + per-fold feature
+                # importance. Both gated by per_fold.
+                if cfg.plots.per_fold:
+                    if len(fold_predictions) > 1:
+                        self._save_fold_plot_multi(
+                            cfg, df, mode, fold_id, fold_predictions,
+                            X_te, d_te,
+                            xlim_dates=oos_span_dates,
+                        )
+
+                    if cfg.predictors.feature_importance:
+                        fold_classical = sorted(
+                            [r for r in fold_results
+                             if r.family == "classical" and not np.isnan(r.kappa)],
+                            key=lambda r: r.kappa, reverse=True,
+                        )
+                        for r in fold_classical:
+                            cand = next((p for p in predictors if p.name == r.name), None)
+                            if cand is not None and _has_native_importance(cand):
+                                self._print_and_save_importance(
+                                    cand, X_te, y_te,
+                                    suffix=f"{mode}_fold{fold_id+1}",
+                                )
+                                break
 
         if not per_fold_rows:
             console.print("[red]No folds produced — check min_train_fraction / data length[/red]")

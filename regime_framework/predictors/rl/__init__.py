@@ -1,20 +1,23 @@
 """Reinforcement learning predictors.
 
-Six approximators × multiple action spaces, all sharing the same
+Approximators × multiple action spaces, all sharing the same
 RegimeTradingEnv and the framework's BasePredictor interface:
 
-  Approximator   | Action spaces             | Backend
-  ---------------|---------------------------|------------------
-  NN             | Discrete-2/-3, Continuous | Stable-Baselines3
-  Linear-Q       | Discrete-2/-3             | custom (online TD)
-  LightGBM-FQI   | Discrete-2/-3             | sklearn-FQI
-  XGBoost-FQI    | Discrete-2/-3             | sklearn-FQI
-  RandomForest-FQI | Discrete-2/-3           | sklearn-FQI
-  Ridge-FQI      | Discrete-2/-3             | sklearn-FQI (closed-form linear)
+  Approximator    | Action spaces             | Backend
+  ----------------|---------------------------|------------------
+  NN              | Discrete-2/-3, Continuous | Stable-Baselines3
+  Linear-Q        | Discrete-2/-3             | custom (online TD)
+  LightGBM-FQI    | Discrete-2/-3             | sklearn-FQI
+  XGBoost-FQI     | Discrete-2/-3             | sklearn-FQI
+  CatBoost-FQI    | Discrete-2/-3             | sklearn-FQI
+  HistGB-FQI      | Discrete-2/-3             | sklearn-FQI (sklearn-native)
+  RandomForest-FQI| Discrete-2/-3             | sklearn-FQI
+  Ridge-FQI       | Discrete-2/-3             | sklearn-FQI (closed-form linear)
+  Huber-FQI       | Discrete-2/-3             | sklearn-FQI (robust linear)
 
 Continuous-action approximators are NN-only because the value-based
 approximators don't extend cleanly to continuous actions (would
-require an actor-critic architecture, not just a Q-function). All four
+require an actor-critic architecture, not just a Q-function). All
 sklearn-based approximators share the same FQI loop (in `_fqi.py`) —
 they only differ in the per-action regressor factory.
 
@@ -48,6 +51,9 @@ from .lgb import LGBQ2Predictor, LGBQ3Predictor
 from .xgb import XGBQ2Predictor, XGBQ3Predictor
 from .rf import RFQ2Predictor, RFQ3Predictor
 from .ridge import RidgeQ2Predictor, RidgeQ3Predictor
+from .huber import HuberQ2Predictor, HuberQ3Predictor
+from .histgb import HistGBQ2Predictor, HistGBQ3Predictor
+from .cat import CatQ2Predictor, CatQ3Predictor
 
 
 __all__ = [
@@ -72,4 +78,10 @@ __all__ = [
     "RFQ3Predictor",
     "RidgeQ2Predictor",
     "RidgeQ3Predictor",
+    "HuberQ2Predictor",
+    "HuberQ3Predictor",
+    "HistGBQ2Predictor",
+    "HistGBQ3Predictor",
+    "CatQ2Predictor",
+    "CatQ3Predictor",
 ]

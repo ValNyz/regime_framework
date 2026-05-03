@@ -21,3 +21,6 @@ plots/
 
 # HF cache (shouldn't ever land here but just in case)
 .cache/
+
+# CatBoost training artifacts (created by CatBoostRegressor.fit)
+catboost_info/
