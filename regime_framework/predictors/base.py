@@ -30,6 +30,10 @@ class PredictionResult:
     f1_macro: float
     confusion: list[list[int]]    # row=true, col=pred, in LABEL_ORDER
     n_test: int
+    # Total fractional return of the long-bull / short-bear / flat-else strategy
+    # on the test slice (same formulation as plot B). NaN if log returns weren't
+    # supplied to evaluate(). Costs/slippage = 0 — idealized but tradeable.
+    synth_gain: float = float("nan")
     metadata: dict = field(default_factory=dict)
 
 

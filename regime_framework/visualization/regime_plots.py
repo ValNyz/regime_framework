@@ -107,15 +107,10 @@ def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None) -> None:
 
 
 def _plot_B(df, smooth, runs, out_path, title_suffix: str, split_dt=None) -> None:
+    from ..evaluation.metrics import synth_equity_curve
     dates = pd.to_datetime(df["date"].values)
     closes = df["close"].values
-    log_ret = np.zeros(len(closes))
-    log_ret[1:] = np.log(closes[1:] / closes[:-1])
-    sign = np.zeros(len(smooth))
-    sign[smooth.values == "bull"] = +1.0
-    sign[smooth.values == "bear"] = -1.0
-    synth_log_eq = np.cumsum(sign * log_ret)
-    synth_eq = np.exp(synth_log_eq) * float(closes[0])
+    synth_eq, _ = synth_equity_curve(closes, smooth.values)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     for lab, s_dt, e_dt in runs:
@@ -183,10 +178,9 @@ def plot_stitched_oos_equity(
         - kappa: float (for color intensity)
         - test_start: str date (for boundary marker)
     """
+    from ..evaluation.metrics import synth_equity_curve
     closes = df["close"].values.astype(float)
     dates = pd.to_datetime(df["date"].values)
-    log_ret = np.zeros(len(closes))
-    log_ret[1:] = np.log(closes[1:] / closes[:-1])
 
     # Build a single label series spanning all folds' test windows
     out = pd.Series("", index=df.index, dtype=object)
@@ -197,13 +191,7 @@ def plot_stitched_oos_equity(
             out.loc[idx] = preds
 
     smooth = denoise_labels(out, window=denoise_window)
-    sign = np.zeros(len(smooth))
-    vals = smooth.values
-    sign[vals == "bull"] = +1.0
-    sign[vals == "bear"] = -1.0
-
-    synth_log_eq = np.cumsum(sign * log_ret)
-    synth_eq = np.exp(synth_log_eq) * float(closes[0])
+    synth_eq, _ = synth_equity_curve(closes, smooth.values)
 
     fig, ax = plt.subplots(figsize=(14, 7))
     ax.plot(dates, closes, color="black", linewidth=0.7, alpha=0.4, label="close (actual)")
@@ -250,10 +238,9 @@ def plot_synth_equity_multi(
     → cumulative equity. All curves on the same log y-axis with the actual price
     in dim black for reference.
     """
+    from ..evaluation.metrics import synth_equity_curve
     closes = df["close"].values.astype(float)
     dates = pd.to_datetime(df["date"].values)
-    log_ret = np.zeros(len(closes))
-    log_ret[1:] = np.log(closes[1:] / closes[:-1])
 
     fig, ax = plt.subplots(figsize=(14, 7))
     ax.plot(dates, closes, color="black", linewidth=0.7, alpha=0.35, label="close (actual)")
@@ -263,12 +250,7 @@ def plot_synth_equity_multi(
     for i, (name, preds) in enumerate(items):
         try:
             smooth = denoise_labels(preds, window=denoise_window)
-            sign = np.zeros(len(smooth))
-            vals = smooth.values
-            sign[vals == "bull"] = +1.0
-            sign[vals == "bear"] = -1.0
-            synth_log_eq = np.cumsum(sign * log_ret)
-            synth_eq = np.exp(synth_log_eq) * float(closes[0])
+            synth_eq, _ = synth_equity_curve(closes, smooth.values)
             ax.plot(dates, synth_eq, color=cmap(i % 10), linewidth=1.2,
                     alpha=0.9, label=name)
         except Exception:

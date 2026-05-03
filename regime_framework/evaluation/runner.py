@@ -312,12 +312,16 @@ class BenchmarkRunner:
         base_predictors = [p for p in predictors if not getattr(p, "is_ensemble", False)]
         ensemble_predictors = [p for p in predictors if getattr(p, "is_ensemble", False)]
 
+        # Close prices for synth_gain — passed once per fold; aligned to y_te.
+        closes_te = np.asarray(df_te["close"].values, dtype=np.float64) if "close" in df_te.columns else None
+
         def _evaluate(predictor, pred_arr, t0):
             res = evaluate(
                 name=predictor.name,
                 family=predictor.family,
                 y_true=np.asarray(y_te.values),
                 y_pred=pred_arr,
+                closes=closes_te,
                 metadata={"elapsed_sec": round(time.time() - t0, 2)},
             )
             results.append(res)
@@ -325,7 +329,7 @@ class BenchmarkRunner:
             console.print(
                 f"  [green]✔[/green] {predictor.name:35s} "
                 f"acc={res.accuracy:.3f} κ={res.kappa:+.3f} F1={res.f1_macro:.3f} "
-                f"({res.metadata['elapsed_sec']}s)"
+                f"gain={res.synth_gain*100:+.1f}% ({res.metadata['elapsed_sec']}s)"
             )
 
         # ---- Pass 1: base predictors (also try predict_proba for ensemble) ----
@@ -489,6 +493,7 @@ class BenchmarkRunner:
                 per_fold_rows.append({
                     "fold": fold_id, "predictor": r.name, "family": r.family,
                     "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
+                    "synth_gain": r.synth_gain,
                     "n_test": r.n_test, "elapsed_sec": r.metadata.get("elapsed_sec", 0),
                     "test_start": str(d_te.iloc[0].date()),
                     "test_end": str(d_te.iloc[-1].date()),
@@ -1050,6 +1055,7 @@ class BenchmarkRunner:
             {
                 "name": r.name, "family": r.family,
                 "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
+                "synth_gain": r.synth_gain,
                 "n_test": r.n_test,
                 "elapsed_sec": r.metadata.get("elapsed_sec", 0),
             } for r in self.results
