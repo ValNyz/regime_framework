@@ -81,20 +81,36 @@ class BasePretrainedPredictor(BasePredictor):
             self._load_model()
 
     def _zero_shot_predict(self, df: pd.DataFrame) -> np.ndarray:
-        """Slide the context over every bar t, forecast horizon, label by sign."""
+        """Slide the context over every bar t, forecast horizon, label by SLOPE sign.
+
+        Comparing mean(forecast) vs close_now is biased by the asset's intrinsic
+        drift (e.g. BTC has +5%/year drift → almost every horizon ends above
+        close_now → always 'bull'). Instead we fit a linear trend on the forecast
+        path itself and label by sign of slope: if the forecast is rising over
+        the horizon → bull, falling → bear. This is asset-drift-invariant.
+        """
         self._ensure_model()
         close = df["close"].to_numpy(dtype=np.float64)
         n = len(close)
         out = np.full(n, "", dtype=object)
+        x = np.arange(self.horizon, dtype=np.float64)
+        x_dev = x - x.mean()
+        SS_x = float((x_dev ** 2).sum())
         for t in tqdm(range(self.context_len, n), desc=f"      {self.name}-zs", leave=False):
             ctx = close[t - self.context_len : t]
             try:
                 fc = self._forecast(ctx, self.horizon)
-                mean_fc = float(np.mean(fc))
-                ret = (mean_fc - close[t - 1]) / max(close[t - 1], 1e-12)
-                out[t] = "bull" if ret > 0 else "bear"
+                fc = np.asarray(fc, dtype=np.float64)[: self.horizon]
+                if len(fc) < 2:
+                    out[t] = "bull"
+                    continue
+                # Regress forecast on time → slope sign = predicted direction
+                y_dev = fc - fc.mean()
+                slope = float((x_dev[: len(fc)] * y_dev).sum()) / max(SS_x, 1e-12)
+                # Normalise slope by current price for invariance across assets
+                norm_slope = slope / max(close[t - 1], 1e-12)
+                out[t] = "bull" if norm_slope > 0 else "bear"
             except Exception as e:
-                # On forecast failure, fall back to "bull" (least-bad default for crypto)
                 out[t] = "bull"
                 if t == self.context_len:
                     print(f"        WARN: forecast error: {e}")

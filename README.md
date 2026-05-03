@@ -34,6 +34,23 @@ pip install -e .
 regime-run run btc_binance_1h
 ```
 
+## Pretrained model dependencies (optional, à la carte)
+
+Each foundation model needs its own package — install only what you'll run:
+
+```bash
+pip install chronos-forecasting     # Chronos-Bolt-Base + Chronos-T5-Large
+pip install timesfm                 # TimesFM-2.0
+pip install uni2ts                  # MOIRAI + MOIRAI-MoE
+pip install gluonts                 # required by Lag-Llama
+pip install git+https://github.com/time-series-foundation-models/lag-llama
+# TimeMoE: loaded via transformers.AutoModelForCausalLM, no extra install
+# Toto: disabled by default — Datadog checkpoint requires their custom loader
+```
+
+If a model isn't installed, the framework prints a clear `ImportError` and
+moves on (other predictors still run).
+
 ## Data layout (auto-resolved from `data_root`)
 
 ```
