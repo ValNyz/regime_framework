@@ -25,7 +25,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
-from ..base import BasePredictor
+from ..base import BasePredictor, MultiCoinAware
 from ...config import LABEL_ORDER
 
 
@@ -33,7 +33,7 @@ def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class BasePretrainedPredictor(BasePredictor):
+class BasePretrainedPredictor(MultiCoinAware, BasePredictor):
     family = "pretrained"
 
     # Subclasses override
@@ -51,6 +51,7 @@ class BasePretrainedPredictor(BasePredictor):
         device: Optional[str] = None,
         embed_subsample: int = 4,      # compute embedding every N bars (zero-shot uses every bar)
     ) -> None:
+        super().__init__()  # MultiCoinAware initializes _target_coin_data / _extra_coin_data
         self.mode = mode
         self.context_len = int(context_len or self._default_context_len)
         self.horizon = int(horizon or self._default_horizon)
@@ -136,10 +137,9 @@ class BasePretrainedPredictor(BasePredictor):
         if n <= self.context_len:
             raise ValueError(
                 f"{self.name} _embed_series: only {n} bars provided but context_len="
-                f"{self.context_len} required. In multi-coin training mode the runner "
-                f"sets df_train empty (no single price series across stacked coins) — "
-                f"pretrained fine_tuned predictors are not compatible with multi-coin "
-                f"runs. Disable them via cfg.predictors.disabled or use a non-multi-coin run."
+                f"{self.context_len} required. (Multi-coin runs now embed each coin's "
+                f"own df via set_multi_coin_data; this error means a coin's df is "
+                f"shorter than context_len.)"
             )
         idxs = list(range(self.context_len, n, self.embed_subsample))
         if not idxs:
@@ -174,19 +174,49 @@ class BasePretrainedPredictor(BasePredictor):
         return self._head_clf.predict(Xs)
 
     # ----- BasePredictor interface -------------------------------------------
+    def _embed_one_coin(self, df: pd.DataFrame, y: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+        """Embed one coin's price series and return aligned (embeddings, labels).
+
+        Used by fit() in both single-coin and multi-coin modes. Per-coin slices
+        are independent — each coin gets its own embedding pass over its own
+        df, then we concatenate before fitting the head.
+        """
+        cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
+        idxs, embs = self._embed_series(df)
+        y_arr = np.array([cls_to_idx[v] for v in y.values], dtype=np.int64)
+        positions_to_label = idxs[idxs < len(y_arr)]
+        y_subset = y_arr[positions_to_label]
+        X_subset = embs[: len(positions_to_label)]
+        return X_subset, y_subset
+
     def fit(self, X_train, y_train, dates_train, df_train):
         if self.mode == "zero_shot":
             return self  # nothing to train
 
-        # fine_tuned: extract embeddings on train, train head
-        idxs, embs = self._embed_series(df_train)
-        # Map sampled embeddings to labels at the same bar position
-        cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
-        y_arr = np.array([cls_to_idx[v] for v in y_train.values], dtype=np.int64)
-        # df_train shares index with y_train; idxs are positional
-        positions_to_label = idxs[idxs < len(y_arr)]
-        y_subset = y_arr[positions_to_label]
-        X_subset = embs[: len(positions_to_label)]
+        # Multi-coin path: embed target + each extra coin separately, fit head
+        # on the concatenated dataset. Otherwise: single-coin path on df_train.
+        # The runner pushes per-coin data via set_multi_coin_data() before fit().
+        if self._target_coin_data is not None and self._extra_coin_data is not None:
+            Xs: list[np.ndarray] = []
+            ys: list[np.ndarray] = []
+            tdata = self._target_coin_data
+            X_t, y_t = self._embed_one_coin(tdata["df"], tdata["y"])
+            Xs.append(X_t); ys.append(y_t)
+            for _coin, edata in self._extra_coin_data.items():
+                try:
+                    X_e, y_e = self._embed_one_coin(edata["df"], edata["y"])
+                    Xs.append(X_e); ys.append(y_e)
+                except ValueError as e:
+                    # An extra coin too short for context_len — skip it, don't crash.
+                    print(f"        WARN: {self.name} skipping extra coin (too few bars): {e}")
+                    continue
+            X_concat = np.concatenate(Xs, axis=0)
+            y_concat = np.concatenate(ys, axis=0)
+            self._fit_head(X_concat, y_concat)
+            return self
+
+        # Single-coin path
+        X_subset, y_subset = self._embed_one_coin(df_train, y_train)
         self._fit_head(X_subset, y_subset)
         return self
 
