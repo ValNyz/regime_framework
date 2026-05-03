@@ -1,0 +1,133 @@
+"""Central configuration with YAML-loadable presets.
+
+A `RunConfig` describes one full benchmark run: which target asset, which
+TF, which paths, which labelling method, which feature sets, which predictors.
+
+Presets live in `configs/presets/*.yaml` — one preset per (asset, venue, TF).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = REPO_ROOT / "configs"
+RESULTS_DIR = REPO_ROOT / "results"
+PLOTS_DIR = REPO_ROOT / "plots"
+
+
+@dataclass
+class DataPaths:
+    """Filesystem paths used by data loaders."""
+    ohlcv: Path
+    funding: Path | None = None
+    cross_ohlcv: Path | None = None      # cross-asset reference (e.g. ETH when target=BTC)
+    cross_name: str = "cross"
+    external_dir: Path | None = None     # FNG, ETF, DXY, VIX, BTC funding
+
+
+@dataclass
+class LabelConfig:
+    method: str = "trend_scan"           # "trend_scan" | "triple_barrier" | "drawdown"
+    L_range: list[int] = field(default_factory=lambda: [72, 120, 168, 240, 336, 480, 720, 1080])
+    t_threshold: float = 0.0             # 0 = pure sign (binary bull/bear)
+    # triple_barrier extras (unused for trend_scan)
+    horizon: int = 48
+    alpha: float = 1.5
+
+
+@dataclass
+class FeatureConfig:
+    use_technical: bool = True
+    use_external: bool = True
+    use_trading_signals: bool = False
+    trading_signals_yaml: Path | None = None
+    drop_nan_rows: bool = True
+
+
+@dataclass
+class SplitConfig:
+    train_fraction: float = 0.80
+    purge_bars: int | None = None        # if None, defaults to max(L_range)
+
+
+@dataclass
+class PredictorConfig:
+    families: list[str] = field(default_factory=lambda: [
+        "classical", "rule_based", "deep_nets", "transformer", "pretrained"
+    ])
+    pretrained_models: list[str] = field(default_factory=lambda: [
+        "chronos_bolt_base",
+        "chronos_large",
+        "timesfm",
+        "moirai_large",
+        "moirai_moe",
+        "timemoe",
+        "lag_llama",
+        "toto",
+    ])
+    pretrained_modes: list[str] = field(default_factory=lambda: ["zero_shot", "fine_tuned"])
+    fine_tune_head: str = "logreg"       # "logreg" | "mlp"
+    forecast_horizon: int = 24           # zero-shot forecasting horizon
+
+
+@dataclass
+class RunConfig:
+    target: str = "BTC"
+    venue: str = "binance"
+    timeframe: str = "1h"
+    paths: DataPaths = field(default_factory=lambda: DataPaths(ohlcv=Path("/dev/null")))
+    label: LabelConfig = field(default_factory=LabelConfig)
+    features: FeatureConfig = field(default_factory=FeatureConfig)
+    split: SplitConfig = field(default_factory=SplitConfig)
+    predictors: PredictorConfig = field(default_factory=PredictorConfig)
+    seed: int = 42
+
+    @classmethod
+    def from_preset(cls, preset_name: str) -> "RunConfig":
+        """Load a preset YAML from configs/presets/<preset_name>.yaml."""
+        preset_path = CONFIG_DIR / "presets" / f"{preset_name}.yaml"
+        if not preset_path.exists():
+            raise FileNotFoundError(f"Preset not found: {preset_path}")
+        return cls.from_yaml(preset_path)
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "RunConfig":
+        data = yaml.safe_load(path.read_text())
+        # Resolve ~ and relative paths
+        paths = data.get("paths", {})
+        resolved_paths = DataPaths(
+            ohlcv=Path(paths["ohlcv"]).expanduser(),
+            funding=Path(paths["funding"]).expanduser() if paths.get("funding") else None,
+            cross_ohlcv=Path(paths["cross_ohlcv"]).expanduser() if paths.get("cross_ohlcv") else None,
+            cross_name=paths.get("cross_name", "cross"),
+            external_dir=Path(paths["external_dir"]).expanduser() if paths.get("external_dir") else None,
+        )
+        return cls(
+            target=data.get("target", "BTC"),
+            venue=data.get("venue", "binance"),
+            timeframe=data.get("timeframe", "1h"),
+            paths=resolved_paths,
+            label=LabelConfig(**data.get("label", {})),
+            features=FeatureConfig(
+                **{k: (Path(v).expanduser() if k == "trading_signals_yaml" and v else v)
+                   for k, v in data.get("features", {}).items()}
+            ),
+            split=SplitConfig(**data.get("split", {})),
+            predictors=PredictorConfig(**data.get("predictors", {})),
+            seed=data.get("seed", 42),
+        )
+
+    @property
+    def purge_bars(self) -> int:
+        if self.split.purge_bars is not None:
+            return self.split.purge_bars
+        return max(self.label.L_range) if self.label.L_range else self.label.horizon
+
+
+LABEL_ORDER = ["bull", "bear"]
+LABEL_COLORS = {"bull": "#2ca02c", "bear": "#d62728"}

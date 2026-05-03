@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Outputs
+results/
+plots/
+*.png
+*.parquet
+*.feather
+
+# HF cache (shouldn't ever land here but just in case)
+.cache/

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "regime_framework"
+version = "0.1.0"
+description = "Modular framework for time series regime classification benchmark"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Valentin Nyzam" }]
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "scikit-learn>=1.5",
+    "xgboost>=2.0",
+    "torch>=2.1",
+    "matplotlib",
+    "PyYAML",
+    "tqdm",
+    "huggingface-hub",
+    "transformers>=4.40",
+    "accelerate",
+    "safetensors",
+]
+
+[project.optional-dependencies]
+chronos = ["chronos-forecasting"]
+timesfm = ["timesfm"]
+moirai = ["uni2ts"]
+timemoe = []
+lag_llama = ["gluonts"]
+toto = []
+all-pretrained = [
+    "chronos-forecasting",
+    "timesfm",
+    "uni2ts",
+    "gluonts",
+]
+
+[project.scripts]
+regime-run = "regime_framework.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["regime_framework*"]
+exclude = ["tests*", "scripts*"]
