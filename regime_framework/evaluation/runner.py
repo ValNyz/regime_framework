@@ -99,6 +99,10 @@ class BenchmarkRunner:
         self.X: pd.DataFrame | None = None
         self.y: pd.Series | None = None
         self.dates: pd.Series | None = None
+        # Cache of extra-coin (X, y, dates) keyed by coin.target. Populated on
+        # first call to _stack_with_target so CV folds don't re-run the entire
+        # feature pipeline for ETH/SOL/etc on every fold.
+        self._extra_coin_cache: dict[str, tuple[pd.DataFrame, pd.Series, pd.Series]] = {}
 
     def run(self) -> dict:
         cfg = self.cfg
@@ -742,8 +746,14 @@ class BenchmarkRunner:
         # Extra coins
         for coin in cfg.training.extra_coins:
             try:
-                console.print(f"[cyan]  loading extra coin: {coin.target}[/cyan]")
-                Xc, yc, dc, _ = self._build_coin_data(cfg, coin)
+                cached = self._extra_coin_cache.get(coin.target)
+                if cached is None:
+                    console.print(f"[cyan]  loading extra coin: {coin.target}[/cyan]")
+                    Xc, yc, dc, _ = self._build_coin_data(cfg, coin)
+                    self._extra_coin_cache[coin.target] = (Xc, yc, dc)
+                else:
+                    console.print(f"[dim]  cached extra coin: {coin.target}[/dim]")
+                    Xc, yc, dc = cached
                 Xc = Xc.copy()
                 Xc["coin_id"] = coin.target
                 # Align columns with target
