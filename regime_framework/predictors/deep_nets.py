@@ -1,13 +1,11 @@
 """Deep neural net predictors: GRU, LSTM (PyTorch).
 
-The MLP variant (formerly DeepMLPPredictor) has been moved to classical.py
-as MLPPredictor since it operates on flat feature vectors like the other
-classical predictors.
+Each accepts a `finetune` flag — when True, warm-starts from prior CV fold
+weights instead of rebuilding self.model on every fit. Walk-forward only.
 """
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
@@ -50,7 +48,14 @@ def _make_sequences(X: np.ndarray, y: np.ndarray, seq_len: int):
 class _SeqPredictor(BasePredictor):
     family = "deep"
     kind: str = "lstm"
-    def __init__(self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=1024, lr=1e-3, dropout=0.2):
+    base_name: str = ""
+    supports_finetune = True
+
+    def __init__(
+        self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=1024,
+        lr=1e-3, dropout=0.2,
+        finetune: bool = False, ft_epochs: int | None = None, ft_lr_scale: float = 0.5,
+    ):
         self.seq_len = int(seq_len)
         self.hidden = int(hidden)
         self.n_layers = int(n_layers)
@@ -58,36 +63,45 @@ class _SeqPredictor(BasePredictor):
         self.batch_size = int(batch_size)
         self.lr = float(lr)
         self.dropout = float(dropout)
+        self.finetune = bool(finetune)
+        self.is_finetune = self.finetune
+        self.name = self.base_name + ("-FT" if self.finetune else "")
+        self.ft_epochs = int(ft_epochs) if ft_epochs is not None else max(self.epochs // 4, 5)
+        self.ft_lr_scale = float(ft_lr_scale)
         self.scaler: StandardScaler | None = None
         self.model: _SeqRNN | None = None
 
     def fit(self, X_train, y_train, dates_train, df_train):
+        if self.finetune and self.model is not None:
+            return self._warm_fit(X_train, y_train, dates_train, df_train)
+        return self._cold_fit(X_train, y_train, dates_train, df_train)
+
+    def _build_loader_and_weights(self, X_train, y_train):
         device = _device()
-        use_amp = device.type == "cuda"
         self.scaler = StandardScaler()
         Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
         cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
         y = np.array([cls_to_idx[v] for v in y_train.values], dtype=np.int64)
         seqs, targets = _make_sequences(Xs, y, self.seq_len)
-
         cls_counts = np.array([(targets == i).sum() for i in range(len(LABEL_ORDER))], dtype=np.float32)
         w = (1.0 / np.maximum(cls_counts, 1))
         w = w * (len(LABEL_ORDER) / w.sum())
         weight = torch.from_numpy(w).float().to(device)
-
         loader = DataLoader(
             TensorDataset(torch.from_numpy(seqs.astype(np.float32)), torch.from_numpy(targets)),
             batch_size=self.batch_size, shuffle=True,
         )
-        self.model = _SeqRNN(Xs.shape[1], self.hidden, self.n_layers, len(LABEL_ORDER), kind=self.kind, dropout=self.dropout).to(device)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        return device, Xs, loader, weight
+
+    def _train(self, loader, weight, device, lr: float, epochs: int):
+        use_amp = device.type == "cuda"
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss(weight=weight)
         amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
-
         self.model.train()
-        for epoch in range(self.epochs):
-            tot = 0.0
-            n = 0
+        log_every = max(1, epochs // 4)
+        for epoch in range(epochs):
+            tot = 0.0; n = 0
             for xb, yb in loader:
                 xb = xb.to(device); yb = yb.to(device)
                 optimizer.zero_grad()
@@ -102,8 +116,19 @@ class _SeqPredictor(BasePredictor):
                     loss.backward()
                     optimizer.step()
                 tot += float(loss.item()); n += 1
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                print(f"      {self.name} epoch {epoch+1}/{self.epochs} loss={tot/max(n,1):.4f}")
+            if (epoch + 1) % log_every == 0 or epoch == 0:
+                print(f"      {self.name} epoch {epoch+1}/{epochs} loss={tot/max(n,1):.4f}")
+
+    def _cold_fit(self, X_train, y_train, dates_train, df_train):
+        device, Xs, loader, weight = self._build_loader_and_weights(X_train, y_train)
+        self.model = _SeqRNN(Xs.shape[1], self.hidden, self.n_layers, len(LABEL_ORDER),
+                             kind=self.kind, dropout=self.dropout).to(device)
+        self._train(loader, weight, device, lr=self.lr, epochs=self.epochs)
+        return self
+
+    def _warm_fit(self, X_train, y_train, dates_train, df_train):
+        device, _, loader, weight = self._build_loader_and_weights(X_train, y_train)
+        self._train(loader, weight, device, lr=self.lr * self.ft_lr_scale, epochs=self.ft_epochs)
         return self
 
     def predict(self, X_test, dates_test, df_test):
@@ -121,17 +146,16 @@ class _SeqPredictor(BasePredictor):
 
         out = np.full(len(Xs), "", dtype=object)
         out[self.seq_len - 1:] = [idx_to_cls[int(i)] for i in pred]
-        # First seq_len-1 entries: forward-fill with first valid prediction
         if len(out) > self.seq_len - 1:
             out[: self.seq_len - 1] = out[self.seq_len - 1]
         return out
 
 
 class GRUPredictor(_SeqPredictor):
-    name = "GRU"
+    base_name = "GRU"
     kind = "gru"
 
 
 class LSTMPredictor(_SeqPredictor):
-    name = "LSTM"
+    base_name = "LSTM"
     kind = "lstm"

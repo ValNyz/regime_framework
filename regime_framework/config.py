@@ -152,6 +152,11 @@ class PredictorConfig:
     pretrained_modes: list[str] = field(default_factory=lambda: ["zero_shot", "fine_tuned"])
     fine_tune_head: str = "logreg"       # "logreg" | "mlp"
     forecast_horizon: int = 24           # zero-shot forecasting horizon
+    # When True, also instantiate fine-tune variants (LightGBM-FT, XGBoost-FT,
+    # MLP-FT, GRU-FT, LSTM-FT, TST-FT) that warm-start from the previous CV
+    # fold's weights. Walk-forward only; auto-skipped under leave_one_out and
+    # single-split (would leak / has no fold concept).
+    include_finetune: bool = False
 
 
 @dataclass

@@ -53,25 +53,35 @@ def _has_native_importance(predictor: BasePredictor) -> bool:
 
 
 def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
-    """Instantiate all predictors enabled in the config."""
+    """Instantiate all predictors enabled in the config.
+
+    When `cfg.predictors.include_finetune` is True, also instantiate a `-FT`
+    variant of each class whose `supports_finetune = True`. The same class
+    produces both cold and FT instances depending on the constructor flag.
+    """
     out: list[BasePredictor] = []
     families = set(cfg.predictors.families)
+    add_ft = bool(cfg.predictors.include_finetune)
+
+    def _add(cls, **kwargs):
+        out.append(cls(**kwargs))
+        if add_ft and getattr(cls, "supports_finetune", False):
+            out.append(cls(finetune=True, **kwargs))
 
     if "classical" in families:
-        out += [
-            LogRegPredictor(),
-            RandomForestPredictor(),
-            ExtraTreesPredictor(),  # randomized splits, RF cousin
-            MLPPredictor(),         # torch GPU, BN+GELU+Dropout, ~84k params
-            XGBoostPredictor(),
-            LightGBMPredictor(),    # leaf-wise GBDT, ~2-3x faster than XGB
-        ]
+        _add(LogRegPredictor)
+        _add(RandomForestPredictor)
+        _add(ExtraTreesPredictor)
+        _add(MLPPredictor)
+        _add(XGBoostPredictor)
+        _add(LightGBMPredictor)
     if "rule_based" in families:
         out += [RegimeV3Predictor(), RegimeV4EmaPredictor()]
     if "deep_nets" in families:
-        out += [GRUPredictor(), LSTMPredictor()]
+        _add(GRUPredictor)
+        _add(LSTMPredictor)
     if "transformer" in families:
-        out += [TimeSeriesTransformerPredictor()]
+        _add(TimeSeriesTransformerPredictor)
     if "pretrained" in families:
         for model_name in cfg.predictors.pretrained_models:
             cls = PRETRAINED_REGISTRY.get(model_name)
@@ -213,6 +223,15 @@ class BenchmarkRunner:
             console.print(f"[yellow]signal_analysis skipped: {e}[/yellow]")
 
         predictors = _build_predictors(cfg)
+        # Single-split has no fold concept — drop FT variants (they would just
+        # cold-start with no prior state and duplicate the cold rows).
+        skipped_ft = [p.name for p in predictors if getattr(p, "is_finetune", False)]
+        predictors = [p for p in predictors if not getattr(p, "is_finetune", False)]
+        if skipped_ft:
+            console.print(
+                f"[yellow]Skipping FT variants in single-split mode "
+                f"(no folds to warm-start from): {', '.join(skipped_ft)}[/yellow]"
+            )
         console.print(f"[bold]Running {len(predictors)} predictors[/bold]")
         baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
         console.print(f"  Baseline (always-predict majority): acc={baseline_acc:.3f}")
@@ -336,6 +355,28 @@ class BenchmarkRunner:
                 min_train_fraction=cfg.split.min_train_fraction,
             )
 
+        # Build predictors ONCE before the fold loop so FT instances retain
+        # their state (booster / model weights / forest) across folds. Cold
+        # variants reset internally on each fit() so reusing them is safe.
+        predictors = _build_predictors(cfg)
+        if mode == "leave_one_out":
+            # Warm-starting fold N from fold N-1 under LOO would leak fold N's
+            # test data (which sat in fold N-1's train). Filter FT out.
+            skipped_ft = [p.name for p in predictors if getattr(p, "is_finetune", False)]
+            predictors = [p for p in predictors if not getattr(p, "is_finetune", False)]
+            if skipped_ft:
+                console.print(
+                    f"[yellow]Skipping FT variants in leave_one_out mode "
+                    f"(would leak): {', '.join(skipped_ft)}[/yellow]"
+                )
+        if not predictors:
+            console.print(
+                f"[red]No predictors built! Configured families: {cfg.predictors.families}. "
+                f"Valid: classical, rule_based, deep_nets, transformer, pretrained.[/red]"
+            )
+            return None
+        console.print(f"[bold]Running {len(predictors)} predictors[/bold]")
+
         per_fold_rows: list[dict] = []
         # Keep ALL predictors' predictions per fold (used for the stitched plot
         # at the end, where we pick the predictor with the best MEAN kappa across folds).
@@ -384,13 +425,6 @@ class BenchmarkRunner:
             )
 
             baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
-            predictors = _build_predictors(cfg)
-            if not predictors:
-                console.print(
-                    f"[red]No predictors built! Configured families: {cfg.predictors.families}. "
-                    f"Valid: classical, rule_based, deep_nets, transformer, pretrained.[/red]"
-                )
-                return None
             fold_results, fold_predictions = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
             )

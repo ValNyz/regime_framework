@@ -96,8 +96,9 @@ def _make_sequences(X: np.ndarray, y: np.ndarray, seq_len: int):
 
 
 class TimeSeriesTransformerPredictor(BasePredictor):
-    name = "TST"
+    base_name = "TST"
     family = "transformer"
+    supports_finetune = True
 
     def __init__(
         self,
@@ -111,6 +112,9 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         batch_size: int = 512,
         lr: float = 3e-4,
         weight_decay: float = 1e-5,
+        finetune: bool = False,
+        ft_epochs: int | None = None,
+        ft_lr_scale: float = 0.5,
     ) -> None:
         self.seq_len = int(seq_len)
         self.d_model = int(d_model)
@@ -122,30 +126,69 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         self.batch_size = int(batch_size)
         self.lr = float(lr)
         self.weight_decay = float(weight_decay)
+        self.finetune = bool(finetune)
+        self.is_finetune = self.finetune
+        self.name = self.base_name + ("-FT" if self.finetune else "")
+        self.ft_epochs = int(ft_epochs) if ft_epochs is not None else max(self.epochs // 4, 5)
+        self.ft_lr_scale = float(ft_lr_scale)
         self.scaler: StandardScaler | None = None
         self.model: _TST | None = None
 
     def fit(self, X_train, y_train, dates_train, df_train):
+        if self.finetune and self.model is not None:
+            return self._warm_fit(X_train, y_train, dates_train, df_train)
+        return self._cold_fit(X_train, y_train, dates_train, df_train)
+
+    def _build_loader_and_weights(self, X_train, y_train):
         device = _device()
-        use_amp = device.type == "cuda"
         self.scaler = StandardScaler()
         Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
         cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
         y = np.array([cls_to_idx[v] for v in y_train.values], dtype=np.int64)
-
         seqs, targets = _make_sequences(Xs, y, self.seq_len)
-
-        cls_counts = np.array(
-            [(targets == i).sum() for i in range(len(LABEL_ORDER))], dtype=np.float32
-        )
+        cls_counts = np.array([(targets == i).sum() for i in range(len(LABEL_ORDER))], dtype=np.float32)
         w = (1.0 / np.maximum(cls_counts, 1))
         w = w * (len(LABEL_ORDER) / w.sum())
         weight = torch.from_numpy(w).float().to(device)
-
         loader = DataLoader(
             TensorDataset(torch.from_numpy(seqs.astype(np.float32)), torch.from_numpy(targets)),
             batch_size=self.batch_size, shuffle=True,
         )
+        return device, Xs, loader, weight
+
+    def _train(self, loader, weight, device, lr: float, epochs: int):
+        use_amp = device.type == "cuda"
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        criterion = nn.CrossEntropyLoss(weight=weight)
+        amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
+        self.model.train()
+        log_every = max(1, epochs // 6)
+        for epoch in range(epochs):
+            tot = 0.0; n = 0
+            for xb, yb in loader:
+                xb = xb.to(device); yb = yb.to(device)
+                optimizer.zero_grad()
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    logits = self.model(xb)
+                    loss = criterion(logits, yb)
+                if amp_scaler is not None:
+                    amp_scaler.scale(loss).backward()
+                    amp_scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    amp_scaler.step(optimizer)
+                    amp_scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    optimizer.step()
+                tot += float(loss.item()); n += 1
+            scheduler.step()
+            if (epoch + 1) % log_every == 0 or epoch == 0:
+                print(f"      {self.name} epoch {epoch+1}/{epochs} loss={tot/max(n,1):.4f} lr={scheduler.get_last_lr()[0]:.2e}")
+
+    def _cold_fit(self, X_train, y_train, dates_train, df_train):
+        device, Xs, loader, weight = self._build_loader_and_weights(X_train, y_train)
         self.model = _TST(
             in_dim=Xs.shape[1],
             n_classes=len(LABEL_ORDER),
@@ -156,37 +199,13 @@ class TimeSeriesTransformerPredictor(BasePredictor):
             dropout=self.dropout,
         ).to(device)
         n_params = sum(p.numel() for p in self.model.parameters())
-        print(f"      TST parameters: {n_params/1e6:.2f}M  (device={device})")
+        print(f"      {self.name} parameters: {n_params/1e6:.2f}M  (device={device})")
+        self._train(loader, weight, device, lr=self.lr, epochs=self.epochs)
+        return self
 
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
-        criterion = nn.CrossEntropyLoss(weight=weight)
-        amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
-
-        self.model.train()
-        for epoch in range(self.epochs):
-            tot = 0.0
-            n = 0
-            for xb, yb in loader:
-                xb = xb.to(device); yb = yb.to(device)
-                optimizer.zero_grad()
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    logits = self.model(xb)
-                    loss = criterion(logits, yb)
-                if amp_scaler is not None:
-                    amp_scaler.scale(loss).backward()
-                    amp_scaler.unscale_(optimizer)   # for grad clipping
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    amp_scaler.step(optimizer)
-                    amp_scaler.update()
-                else:
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    optimizer.step()
-                tot += float(loss.item()); n += 1
-            scheduler.step()
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                print(f"      TST epoch {epoch+1}/{self.epochs} loss={tot/max(n,1):.4f} lr={scheduler.get_last_lr()[0]:.2e}")
+    def _warm_fit(self, X_train, y_train, dates_train, df_train):
+        device, _, loader, weight = self._build_loader_and_weights(X_train, y_train)
+        self._train(loader, weight, device, lr=self.lr * self.ft_lr_scale, epochs=self.ft_epochs)
         return self
 
     def predict(self, X_test, dates_test, df_test):
