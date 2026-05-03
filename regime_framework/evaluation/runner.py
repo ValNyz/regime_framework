@@ -16,8 +16,9 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from ..config import RunConfig, RESULTS_DIR, PLOTS_DIR
+from ..config import RunConfig, RESULTS_DIR, PLOTS_DIR, ExtraCoinSpec
 from ..data.loaders import load_ohlcv
+from ..data.conventions import DataRoot
 from ..labels import get_labeller
 from ..features.pipeline import FeaturePipeline
 from ..predictors.base import BasePredictor, PredictionResult
@@ -152,6 +153,20 @@ class BenchmarkRunner:
         )
         df_tr = df.loc[X_tr.index]
         df_te = df.loc[X_te.index]
+
+        # Multi-coin: replace train with stacked target+extras (test stays target-only)
+        if cfg.training.extra_coins:
+            X_tr_stacked, y_tr_stacked, d_tr_stacked = self._stack_with_target(
+                cfg, X_tr, y_tr, d_tr,
+            )
+            # Align test set columns with train (test must have same coin_id one-hot cols)
+            X_te = X_te.copy()
+            for col in X_tr_stacked.columns:
+                if col.startswith("coin_") and col not in X_te.columns:
+                    X_te[col] = 1.0 if col == f"coin_{cfg.target}" else 0.0
+            X_te = X_te[X_tr_stacked.columns]   # exact match
+            X_tr, y_tr, d_tr = X_tr_stacked, y_tr_stacked, d_tr_stacked
+            df_tr = df.iloc[:0]   # not used by ML predictors; rule-based use df_te
         console.print(
             f"  Train: {len(X_tr):>6} bars ({d_tr.iloc[0].date()} → {d_tr.iloc[-1].date()})"
         )
@@ -291,6 +306,27 @@ class BenchmarkRunner:
             y_te = y.iloc[test_idx]
             d_te = dates.iloc[test_idx]
             df_te = df.loc[X_te.index]
+
+            # Multi-coin: stack target+extras into the train fold
+            if cfg.training.extra_coins:
+                X_tr_stacked, y_tr_stacked, d_tr_stacked = self._stack_with_target(
+                    cfg, X_tr, y_tr, d_tr,
+                )
+                # Filter extra-coin training data to bars BEFORE the fold's test start
+                # to prevent leakage (extra coins' future shouldn't be used to train fold k)
+                cutoff = d_te.iloc[0]
+                keep = d_tr_stacked < cutoff
+                X_tr_stacked = X_tr_stacked.loc[keep].reset_index(drop=True)
+                y_tr_stacked = y_tr_stacked.loc[keep].reset_index(drop=True)
+                d_tr_stacked = d_tr_stacked.loc[keep].reset_index(drop=True)
+                # Align test columns
+                X_te = X_te.copy()
+                for col in X_tr_stacked.columns:
+                    if col.startswith("coin_") and col not in X_te.columns:
+                        X_te[col] = 1.0 if col == f"coin_{cfg.target}" else 0.0
+                X_te = X_te[X_tr_stacked.columns]
+                X_tr, y_tr, d_tr = X_tr_stacked, y_tr_stacked, d_tr_stacked
+                df_tr = df.iloc[:0]
 
             console.rule(
                 f"[bold cyan]Fold {fold_id+1}/{n_folds} ({mode}): "
@@ -495,6 +531,128 @@ class BenchmarkRunner:
                 f"{r.metadata.get('elapsed_sec', 0):.1f}s",
             )
         console.print(table)
+
+    # -------------------------------------------------------------------
+    # Multi-coin training data
+    # -------------------------------------------------------------------
+    def _build_coin_data(
+        self, cfg: RunConfig, coin: ExtraCoinSpec,
+    ) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]:
+        """Build (X, y, dates, df) for one extra coin using main config defaults."""
+        if cfg.data_root is None:
+            raise RuntimeError(
+                "data_root not set in config — required to resolve extra coin paths. "
+                "Add `data_root: ~/regime_data` to the preset."
+            )
+        venue = coin.venue or cfg.venue
+        quote = coin.quote or cfg.quote
+        settle = coin.settle or cfg.settle
+        timeframe = coin.timeframe or cfg.timeframe
+
+        root = DataRoot(
+            data_root=cfg.data_root,
+            venue=venue,
+            target=coin.target,
+            quote=quote,
+            settle=settle,
+            timeframe=timeframe,
+        )
+        if not root.ohlcv().exists():
+            raise FileNotFoundError(f"OHLCV missing for extra coin: {root.ohlcv()}")
+
+        df = load_ohlcv(root.ohlcv())
+        labeller = get_labeller(
+            cfg.label.method,
+            L_range=cfg.label.L_range,
+            t_threshold=cfg.label.t_threshold,
+        )
+        labels = labeller.compute(df)
+        pipeline = FeaturePipeline(
+            use_technical=cfg.features.use_technical,
+            use_external=cfg.features.use_external,
+            use_trading_signals=cfg.features.use_trading_signals,
+            trading_signals_yaml=cfg.features.trading_signals_yaml,
+            target_funding_path=root.funding() if root.funding().exists() else None,
+            cross_ohlcv_path=root.cross_ohlcv() if root.cross_ohlcv().exists() else None,
+            cross_name=root.cross_name(),
+            external_dir=cfg.paths.external_dir,
+            drop_nan_rows=cfg.features.drop_nan_rows,
+        )
+        X, y, dates = pipeline.build(df, labels)
+        return X, y, dates, df
+
+    def _stack_with_target(
+        self,
+        cfg: RunConfig,
+        X_target: pd.DataFrame,
+        y_target: pd.Series,
+        dates_target: pd.Series,
+    ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+        """Concatenate target + extra coins for training. Adds coin_id one-hot
+        columns. Returns combined (X, y, dates).
+        """
+        if not cfg.training.extra_coins:
+            return X_target, y_target, dates_target
+
+        all_X: list[pd.DataFrame] = []
+        all_y: list[pd.Series] = []
+        all_dates: list[pd.Series] = []
+        coin_ids: list[str] = []
+
+        # Target coin first
+        Xt = X_target.copy()
+        Xt["coin_id"] = cfg.target
+        all_X.append(Xt)
+        all_y.append(y_target.copy())
+        all_dates.append(dates_target.copy())
+        coin_ids.append(cfg.target)
+
+        # Extra coins
+        for coin in cfg.training.extra_coins:
+            try:
+                console.print(f"[cyan]  loading extra coin: {coin.target}[/cyan]")
+                Xc, yc, dc, _ = self._build_coin_data(cfg, coin)
+                Xc = Xc.copy()
+                Xc["coin_id"] = coin.target
+                # Align columns with target
+                missing_in_target = set(Xc.columns) - set(Xt.columns) - {"coin_id"}
+                missing_in_extra = set(Xt.columns) - set(Xc.columns) - {"coin_id"}
+                if missing_in_target or missing_in_extra:
+                    # Use intersection only
+                    common = sorted((set(Xt.columns) & set(Xc.columns)) | {"coin_id"})
+                    Xt = Xt[common]
+                    all_X[0] = Xt   # update target's stored frame
+                    Xc = Xc[common]
+                all_X.append(Xc)
+                all_y.append(yc)
+                all_dates.append(dc)
+                coin_ids.append(coin.target)
+                console.print(f"    {coin.target}: {len(Xc):>6} bars")
+            except Exception as e:
+                console.print(f"[yellow]    {coin.target} skipped: {e}[/yellow]")
+
+        # One-hot encode coin_id
+        X_combined = pd.concat(all_X, axis=0, ignore_index=False)
+        y_combined = pd.concat(all_y, axis=0, ignore_index=False)
+        dates_combined = pd.concat(all_dates, axis=0, ignore_index=False)
+        if cfg.training.add_coin_id_feature:
+            ohe = pd.get_dummies(X_combined["coin_id"], prefix="coin").astype(float)
+            X_combined = pd.concat([X_combined.drop(columns="coin_id"), ohe], axis=1)
+        else:
+            X_combined = X_combined.drop(columns="coin_id")
+
+        # Sort by date for clean walk-forward semantics
+        order = dates_combined.argsort()
+        X_combined = X_combined.iloc[order].reset_index(drop=True)
+        y_combined = y_combined.iloc[order].reset_index(drop=True)
+        dates_combined = dates_combined.iloc[order].reset_index(drop=True)
+
+        n_coins = len(coin_ids)
+        n_total = len(X_combined)
+        console.print(
+            f"[bold cyan]Multi-coin train data: {n_coins} coins, {n_total} total bars[/bold cyan]"
+        )
+        return X_combined, y_combined, dates_combined
 
     def _print_and_save_importance(self, predictor: BasePredictor, X_te, y_te) -> None:
         try:

@@ -1,0 +1,24 @@
+# Preset: BTC/USDT 1h with multi-coin training data.
+#
+# Same as btc_binance_1h but augments training with ETH, SOL, BNB, XRP.
+# Each coin's features+labels are computed independently and stacked into
+# the training set with a coin_id one-hot. Test stays on BTC only.
+#
+# Use this to see whether predictors generalize across crypto assets, or
+# are overfit to BTC's specific regime patterns.
+
+target: BTC
+venue: binance
+quote: USDT
+settle: USDT
+timeframe: 1h
+
+data_root: ~/regime_data
+
+training:
+  extra_coins:
+    - target: ETH
+    - target: SOL
+    - target: BNB
+    - target: XRP
+  add_coin_id_feature: true

@@ -108,6 +108,30 @@ class SplitConfig:
 
 
 @dataclass
+class ExtraCoinSpec:
+    """One additional coin to include in training data only.
+
+    Tests still happen on the target coin. Each extra coin contributes its
+    own (features, labels) computed independently — same FeaturePipeline,
+    different OHLCV/funding/cross paths. A `coin_id` one-hot feature is added
+    so the classifier can learn coin-specific biases.
+
+    Defaults follow the main target's venue/quote/settle/timeframe when None.
+    """
+    target: str
+    venue: str | None = None
+    quote: str | None = None
+    settle: str | None = None
+    timeframe: str | None = None
+
+
+@dataclass
+class TrainingConfig:
+    extra_coins: list[ExtraCoinSpec] = field(default_factory=list)
+    add_coin_id_feature: bool = True
+
+
+@dataclass
 class PredictorConfig:
     families: list[str] = field(default_factory=lambda: [
         "classical", "rule_based", "deep_nets", "transformer", "pretrained"
@@ -131,12 +155,16 @@ class PredictorConfig:
 class RunConfig:
     target: str = "BTC"
     venue: str = "binance"
+    quote: str = "USDT"
+    settle: str = "USDT"
     timeframe: str = "1h"
+    data_root: Path | None = None        # for resolving extra coin paths
     paths: DataPaths = field(default_factory=lambda: DataPaths(ohlcv=Path("/dev/null")))
     label: LabelConfig = field(default_factory=LabelConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
     predictors: PredictorConfig = field(default_factory=PredictorConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
     seed: int = 42
 
     @classmethod
@@ -171,6 +199,8 @@ class RunConfig:
     def _from_dict(cls, data: dict, source: Path | None = None) -> "RunConfig":
         target = data.get("target", "BTC")
         venue = data.get("venue", "binance")
+        quote = data.get("quote", "USDT")
+        settle = data.get("settle", quote)
         timeframe = data.get("timeframe", "1h")
 
         # Two ways to specify paths in the YAML:
@@ -220,15 +250,35 @@ class RunConfig:
                 p = CONFIG_DIR / p
             feat_block["trading_signals_yaml"] = p
 
+        # Parse training (multi-coin extra training data)
+        train_block = data.get("training", {}) or {}
+        extra_specs = []
+        for ec in (train_block.get("extra_coins") or []):
+            extra_specs.append(ExtraCoinSpec(
+                target=ec["target"],
+                venue=ec.get("venue"),
+                quote=ec.get("quote"),
+                settle=ec.get("settle"),
+                timeframe=ec.get("timeframe"),
+            ))
+        training_cfg = TrainingConfig(
+            extra_coins=extra_specs,
+            add_coin_id_feature=bool(train_block.get("add_coin_id_feature", True)),
+        )
+
         return cls(
-            target=data.get("target", "BTC"),
-            venue=data.get("venue", "binance"),
-            timeframe=data.get("timeframe", "1h"),
+            target=target,
+            venue=venue,
+            quote=quote,
+            settle=settle,
+            timeframe=timeframe,
+            data_root=Path(data_root).expanduser() if data_root else None,
             paths=resolved_paths,
             label=LabelConfig(**data.get("label", {})),
             features=FeatureConfig(**feat_block),
             split=SplitConfig(**data.get("split", {})),
             predictors=PredictorConfig(**data.get("predictors", {})),
+            training=training_cfg,
             seed=data.get("seed", 42),
         )
 
