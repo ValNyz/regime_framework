@@ -225,7 +225,9 @@ class BenchmarkRunner:
             cfg.split.cv_folds = cfg.split.walk_forward_folds
             cfg.split.cv_mode = "walk_forward"
 
-        if cfg.split.cv_folds and cfg.split.cv_folds > 0:
+        # Rolling mode is always CV regardless of cv_folds (folds derive from
+        # train/test window sizes). For other modes, cv_folds > 0 triggers CV.
+        if cfg.split.cv_mode == "rolling" or (cfg.split.cv_folds and cfg.split.cv_folds > 0):
             return self._run_cv(cfg, df, X, y, dates, purge)
         else:
             return self._run_single_split(cfg, df, labels, X, y, dates, purge)

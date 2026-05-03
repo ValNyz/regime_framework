@@ -44,17 +44,32 @@ def run(
     ),
     cv_folds: int = typer.Option(
         0, "--cv-folds", "-k",
-        help="Number of cross-validation folds. 0 = single train/test split (default).",
+        help="Number of CV folds. 0 = single split (default). Ignored in 'rolling' mode "
+             "(folds are derived from train/test window sizes).",
     ),
     cv_mode: str = typer.Option(
         "walk_forward", "--cv-mode",
-        help="CV mode: walk_forward (expanding window, live-style), "
-             "leave_one_out (each fold tested with rest as train, future-info), "
-             "or both (run both and compare).",
+        help="CV mode: walk_forward (expanding), leave_one_out, both, or "
+             "rolling (fixed train + sliding test window).",
     ),
     min_train_fraction: float = typer.Option(
         0.40, "--min-train-fraction",
         help="Walk-forward only: fold-0 train size (fraction of total).",
+    ),
+    train_window_bars: int = typer.Option(
+        0, "--train-window-bars",
+        help="Rolling mode: training window size in bars. Defaults to 4380 "
+             "(6mo at 1h timeframe) when unset.",
+    ),
+    test_window_bars: int = typer.Option(
+        0, "--test-window-bars",
+        help="Rolling mode: test window size in bars. Defaults to 730 "
+             "(1mo at 1h timeframe) when unset.",
+    ),
+    step_bars: int = typer.Option(
+        0, "--step-bars",
+        help="Rolling mode: slide step in bars. 0 = same as test window "
+             "(non-overlapping consecutive tests).",
     ),
 ):
     """Run the full benchmark on a preset config."""
@@ -75,10 +90,18 @@ def run(
         cfg.predictors.families.remove("pretrained")
     if pretrained:
         cfg.predictors.pretrained_models = list(pretrained)
-    if cv_folds > 0:
-        if cv_mode not in ("walk_forward", "leave_one_out", "both"):
+    valid_modes = ("walk_forward", "leave_one_out", "both", "rolling")
+    if cv_mode == "rolling":
+        # Rolling mode is always CV; cv_folds derives from window sizes.
+        cfg.split.cv_mode = "rolling"
+        cfg.split.cv_folds = max(1, cv_folds)  # >0 just to enter the CV path
+        cfg.split.train_window_bars = train_window_bars or cfg.split.train_window_bars or 4380
+        cfg.split.test_window_bars = test_window_bars or cfg.split.test_window_bars or 730
+        cfg.split.step_bars = step_bars or cfg.split.step_bars
+    elif cv_folds > 0:
+        if cv_mode not in valid_modes:
             raise typer.BadParameter(
-                f"--cv-mode must be one of: walk_forward, leave_one_out, both (got {cv_mode!r})"
+                f"--cv-mode must be one of {valid_modes} (got {cv_mode!r})"
             )
         cfg.split.cv_folds = cv_folds
         cfg.split.cv_mode = cv_mode
