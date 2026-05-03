@@ -154,15 +154,19 @@ def _eval_signal(df: pd.DataFrame, signal_type: str, direction: str, params: dic
             out.loc[c > df["bb_upper"]] = 1
 
     elif signal_type == "bear_climax":
+        # Causal: detect AT BAR t that bar t-1 had a big down move (> 3 ATR%)
+        # and this bar (t) is reversing up. Original used ret.shift(-1) which
+        # peeked at the next bar — that was a look-ahead bias bug.
         ret = df["close"].pct_change()
         atrp = df.get("atr_pct", pd.Series(0.0, index=df.index))
-        cond = (ret < -3 * atrp) & (ret.shift(-1) > 0)
+        cond = (ret.shift(1) < -3 * atrp.shift(1)) & (ret > 0)
         out.loc[cond.fillna(False)] = 1
 
     elif signal_type == "bull_climax":
+        # Causal counterpart of bear_climax — see comment above.
         ret = df["close"].pct_change()
         atrp = df.get("atr_pct", pd.Series(0.0, index=df.index))
-        cond = (ret > 3 * atrp) & (ret.shift(-1) < 0)
+        cond = (ret.shift(1) > 3 * atrp.shift(1)) & (ret < 0)
         out.loc[cond.fillna(False)] = 1
 
     elif signal_type == "trend_weakening":

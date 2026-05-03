@@ -35,7 +35,11 @@ def denoise_labels(labels: pd.Series, window: int = 168) -> pd.Series:
         vals_, counts_ = np.unique(v.astype(int), return_counts=True)
         return float(vals_[counts_.argmax()])
 
-    smoothed = coded.rolling(window, center=True, min_periods=1).apply(_mode, raw=True)
+    # Causal smoothing (center=False): each bar's smoothed value uses only its
+    # own past `window` bars. Earlier center=True peeked ~window/2 bars into
+    # the future, which made the synth-equity plot look better than tradeable
+    # because trades fired on look-ahead-smoothed labels.
+    smoothed = coded.rolling(window, center=False, min_periods=1).apply(_mode, raw=True)
     out = smoothed.map(lambda x: inv_map.get(int(x), "") if pd.notna(x) else "")
     return pd.Series(out.values, index=labels.index, dtype=object)
 
