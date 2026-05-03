@@ -1,4 +1,6 @@
 # Preset: ETH/USDT perp on Binance, 1h.
+#
+# Inherits everything from configs/default.yaml. Only overrides what differs.
 
 target: ETH
 venue: binance
@@ -7,34 +9,3 @@ settle: USDT
 timeframe: 1h
 
 data_root: ~/regime_data
-# cross auto-resolves to BTC for ETH target
-
-label:
-  method: trend_scan
-  L_range: [72, 120, 168, 240, 336, 480, 720, 1080]
-  t_threshold: 0.0
-
-features:
-  use_technical: true
-  use_external: true
-  use_trading_signals: false
-
-split:
-  train_fraction: 0.80
-
-predictors:
-  families: [classical, rule_based, deep_nets, transformer, pretrained]
-  pretrained_models:
-    - chronos_bolt_base
-    - chronos_large
-    - timesfm
-    - moirai_large
-    - moirai_moe
-    - timemoe
-    - lag_llama
-    - toto
-  pretrained_modes: [zero_shot, fine_tuned]
-  fine_tune_head: logreg
-  forecast_horizon: 24
-
-seed: 42

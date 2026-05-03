@@ -16,6 +16,17 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "configs"
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursive dict merge — override wins on leaf values, dicts merge recursively."""
+    out = dict(base)
+    for k, v in override.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 RESULTS_DIR = REPO_ROOT / "results"
 PLOTS_DIR = REPO_ROOT / "plots"
 
@@ -125,15 +136,34 @@ class RunConfig:
 
     @classmethod
     def from_preset(cls, preset_name: str) -> "RunConfig":
-        """Load a preset YAML from configs/presets/<preset_name>.yaml."""
+        """Load a preset YAML, deep-merged on top of configs/default.yaml.
+
+        Presets only need to specify what differs from defaults (typically
+        `target`, `venue`, `quote`, `settle`, `timeframe`, `data_root`).
+        """
         preset_path = CONFIG_DIR / "presets" / f"{preset_name}.yaml"
         if not preset_path.exists():
             raise FileNotFoundError(f"Preset not found: {preset_path}")
-        return cls.from_yaml(preset_path)
+
+        default_path = CONFIG_DIR / "default.yaml"
+        merged_data: dict = {}
+        if default_path.exists():
+            merged_data = yaml.safe_load(default_path.read_text()) or {}
+        preset_data = yaml.safe_load(preset_path.read_text()) or {}
+        merged_data = _deep_merge(merged_data, preset_data)
+
+        # Reuse from_yaml logic by writing the merged dict to a temp file would
+        # be wasteful — call the dict-based loader directly.
+        return cls._from_dict(merged_data, source=preset_path)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "RunConfig":
+        """Load a single YAML (no default merge). Use from_preset() for merging."""
         data = yaml.safe_load(path.read_text())
+        return cls._from_dict(data, source=path)
+
+    @classmethod
+    def _from_dict(cls, data: dict, source: Path | None = None) -> "RunConfig":
         target = data.get("target", "BTC")
         venue = data.get("venue", "binance")
         timeframe = data.get("timeframe", "1h")
@@ -144,6 +174,12 @@ class RunConfig:
         paths_block = data.get("paths", {})
         data_root = data.get("data_root")
 
+        # Skip auto-resolve if data_root is the placeholder /tmp/missing.feather (default)
+        is_placeholder = (
+            (paths_block.get("ohlcv") or "").startswith("/tmp/missing")
+        )
+        if is_placeholder:
+            paths_block = {}
         if data_root and not paths_block:
             cross = data.get("cross", {}) or {}
             resolved_paths = DataPaths.from_data_root(
@@ -161,7 +197,7 @@ class RunConfig:
             # Explicit paths block (legacy / override mode)
             if not paths_block:
                 raise ValueError(
-                    f"{path}: must provide either `data_root:` (auto-resolve) or `paths:` (explicit)."
+                    f"{source}: must provide either `data_root:` (auto-resolve) or `paths:` (explicit)."
                 )
             resolved_paths = DataPaths(
                 ohlcv=Path(paths_block["ohlcv"]).expanduser(),

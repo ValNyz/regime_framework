@@ -1,24 +1,31 @@
-# Default config — copied as fallback when a preset doesn't override a field.
-# Useful as a single-source-of-truth reference of all available knobs.
+# Default config — merged under every preset. Presets only need to override
+# what differs (typically: target, venue, quote, settle, timeframe, data_root).
+#
+# Use `regime-run presets` to list available presets.
 
+# --- Asset / venue / TF (must be overridden by preset) ---
 target: BTC
 venue: binance
+quote: USDT
+settle: USDT
 timeframe: 1h
 
-paths:
-  ohlcv: /tmp/missing.feather
-  funding: null
-  cross_ohlcv: null
-  cross_name: cross
-  external_dir: null
+# --- Where data lives (must be overridden by preset or per machine) ---
+data_root: ~/regime_data
 
+# Optional cross-asset override — defaults to DEFAULT_CROSS map (BTC→ETH, HYPE→BTC, ...)
+# cross:
+#   target: SOL
+
+# --- Labelling ---
 label:
   method: trend_scan        # trend_scan | triple_barrier | drawdown
   L_range: [72, 120, 168, 240, 336, 480, 720, 1080]
   t_threshold: 0.0
-  horizon: 48               # used by triple_barrier
-  alpha: 1.5                # used by triple_barrier
+  horizon: 48               # used by triple_barrier only
+  alpha: 1.5                # used by triple_barrier only
 
+# --- Features ---
 features:
   use_technical: true
   use_external: true
@@ -26,10 +33,12 @@ features:
   trading_signals_yaml: null
   drop_nan_rows: true
 
+# --- Train/test split ---
 split:
   train_fraction: 0.80
   purge_bars: null          # null → max(L_range)
 
+# --- Predictors ---
 predictors:
   families: [classical, rule_based, deep_nets, transformer, pretrained]
   pretrained_models:
