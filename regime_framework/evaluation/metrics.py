@@ -79,6 +79,44 @@ def compound_returns(gains: np.ndarray | list[float]) -> float:
     return float(np.prod(1.0 + g) - 1.0)
 
 
+def directional_kappa(
+    closes: np.ndarray,
+    y_pred: np.ndarray,
+) -> float:
+    """Cohen's κ between predictions and next-bar return sign.
+
+    For each bar t (0 <= t < n-1):
+        truth[t] = 'bull' if close[t+1] > close[t] else 'bear'
+        pred[t]  = y_pred[t] (filtered to bull/bear)
+    Returns κ on the resulting agreement.
+
+    By construction this metric tracks synth_gain: the strategy at bar t
+    takes position sign(y_pred[t]) and earns sign(y_pred[t]) * log_ret[t+1].
+    A bull/bear agreement on each bar is exactly what the strategy needs.
+
+    Returns NaN if there's only one class (truth all one direction or
+    pred all one direction) — same convention as evaluate's kappa.
+    """
+    closes = np.asarray(closes, dtype=np.float64)
+    y_pred = np.asarray(y_pred)
+    if len(closes) < 2 or len(y_pred) < 2:
+        return float("nan")
+    # Truth: sign of next-bar return at every bar except the last.
+    n = min(len(closes), len(y_pred)) - 1
+    truth = np.where(closes[1:n + 1] > closes[:n], "bull", "bear")
+    pred = y_pred[:n]
+    # Filter to bars where prediction is bull or bear (exclude '' / range).
+    mask = (pred == "bull") | (pred == "bear")
+    if mask.sum() < 2:
+        return float("nan")
+    truth_f = truth[mask]
+    pred_f = pred[mask]
+    observed = np.unique(np.concatenate([truth_f, pred_f]))
+    if len(observed) <= 1:
+        return float("nan")
+    return float(cohen_kappa_score(truth_f, pred_f, labels=LABEL_ORDER))
+
+
 def synth_gain_by_month(
     closes: np.ndarray,
     labels: np.ndarray,
@@ -148,16 +186,23 @@ def evaluate(
     cm = confusion_matrix(y_true_f, y_pred_f, labels=LABEL_ORDER).tolist()
 
     synth_gain = float("nan")
+    dir_kappa = float("nan")
     if closes is not None and len(closes) == len(y_pred):
         # Use the masked-aligned closes + predictions so unlabeled bars are
         # excluded from PnL too (they'd be flat anyway, but cleaner).
-        closes_f = np.asarray(closes)[mask]
+        closes_arr = np.asarray(closes)
+        closes_f = closes_arr[mask]
         _, synth_gain = synth_equity_curve(closes_f, y_pred_f)
+        # Directional kappa: agreement between prediction and next-bar return
+        # sign. Computed on raw (unmasked) y_pred so we use all bars where the
+        # strategy could actually take a position.
+        dir_kappa = directional_kappa(closes_arr, y_pred)
 
     return PredictionResult(
         name=name, family=family,
         accuracy=acc, kappa=kappa, f1_macro=f1m,
         confusion=cm, n_test=int(len(y_true_f)),
         synth_gain=synth_gain,
+        dir_kappa=dir_kappa,
         metadata=metadata or {},
     )

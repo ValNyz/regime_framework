@@ -144,9 +144,10 @@ def run(
     if fold_plots is not None:
         cfg.plots.per_fold = bool(fold_plots)
     if rank_by is not None:
-        if rank_by not in ("kappa", "gain", "vs_bh"):
+        if rank_by not in ("kappa", "dir_kappa", "gain", "vs_bh"):
             raise typer.BadParameter(
-                f"--rank-by must be one of: kappa, gain, vs_bh (got {rank_by!r})"
+                f"--rank-by must be one of: kappa, dir_kappa, gain, vs_bh "
+                f"(got {rank_by!r})"
             )
         cfg.predictors.rank_by = rank_by
 

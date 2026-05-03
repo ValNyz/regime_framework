@@ -621,6 +621,7 @@ class BenchmarkRunner:
                 per_fold_rows.append({
                     "fold": fold_id, "predictor": r.name, "family": r.family,
                     "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
+                    "dir_kappa": r.dir_kappa,
                     "synth_gain": r.synth_gain,
                     "bh_gain": bh_gain_fold,
                     "n_test": r.n_test, "elapsed_sec": r.metadata.get("elapsed_sec", 0),
@@ -846,6 +847,7 @@ class BenchmarkRunner:
         agg = per_fold.groupby(["predictor", "family"]).agg(
             kappa_mean=("kappa", "mean"),
             kappa_std=("kappa", "std"),
+            dir_kappa_mean=("dir_kappa", "mean"),
             acc_mean=("accuracy", "mean"),
             f1_mean=("f1_macro", "mean"),
             gain_mean=("synth_gain", "mean"),
@@ -871,6 +873,7 @@ class BenchmarkRunner:
         rank_by = getattr(cfg_eff.predictors, "rank_by", "kappa")
         sort_col = {
             "kappa": "kappa_mean",
+            "dir_kappa": "dir_kappa_mean",
             "gain": "gain_total",
             "vs_bh": "gain_vs_bh",
         }.get(rank_by, "kappa_mean")
@@ -880,12 +883,12 @@ class BenchmarkRunner:
 
         bh_std = float(bh_per_fold.std()) if len(bh_per_fold) > 1 else float("nan")
         rank_label = {
-            "kappa": "mean κ", "gain": "gain_total", "vs_bh": "vs_BH",
+            "kappa": "mean κ", "dir_kappa": "dir-κ", "gain": "gain_total", "vs_bh": "vs_BH",
         }.get(rank_by, "mean κ")
         title = f"{mode.replace('_', '-')} aggregate — sorted by {rank_label} (B&H total = {bh_total*100:+.1f}%)"
         table = Table(title=title)
         for col in (
-            "predictor", "family", "κ_mean", "κ_std", "acc", "F1",
+            "predictor", "family", "κ_mean", "κ_std", "dir-κ", "acc", "F1",
             "gain_mean", "gain_std", "gain_total", "vs_BH", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
@@ -894,7 +897,7 @@ class BenchmarkRunner:
         bh_std_str = f"[dim]{bh_std*100:.1f}%[/dim]" if not np.isnan(bh_std) else "[dim]--[/dim]"
         table.add_row(
             "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
-            "--", "--", "--", "--",
+            "--", "--", "--", "--", "--",
             f"[dim]{bh_mean*100:+.1f}%[/dim]",
             bh_std_str,
             f"[dim]{bh_total*100:+.1f}%[/dim]",
@@ -912,6 +915,8 @@ class BenchmarkRunner:
             elif km < 0:
                 color = "red"
             kstr = f"[{color}]{km:+.3f}[/{color}]" if color else f"{km:+.3f}"
+            dk = float(r["dir_kappa_mean"]) if not pd.isna(r["dir_kappa_mean"]) else float("nan")
+            dk_str = f"{dk:+.3f}" if not np.isnan(dk) else "--"
             gain_total = float(r["gain_total"])
             vs_bh = float(r["gain_vs_bh"])
             vs_bh_color = "green" if vs_bh > 0 else "red"
@@ -920,6 +925,7 @@ class BenchmarkRunner:
             table.add_row(
                 str(r["predictor"]), str(r["family"]),
                 kstr, f"{r['kappa_std']:.3f}",
+                dk_str,
                 f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}",
                 f"{r['gain_mean']*100:+.1f}%",
                 gstd_str,

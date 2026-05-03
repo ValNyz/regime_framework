@@ -34,6 +34,13 @@ class PredictionResult:
     # on the test slice (same formulation as plot B). NaN if log returns weren't
     # supplied to evaluate(). Costs/slippage = 0 — idealized but tradeable.
     synth_gain: float = float("nan")
+    # Directional kappa: Cohen's κ between the predicted label and the SIGN of
+    # the next-bar log return (sign(close[t+1]/close[t])). Independent of the
+    # training labels, this metric correlates directly with synth_gain — same
+    # underlying agreement as the strategy's bar-level decisions. Useful as a
+    # gain-aligned alternative to the standard κ when the training label is
+    # itself off-target (e.g. trend-scan trained, but we want trade-aligned eval).
+    dir_kappa: float = float("nan")
     metadata: dict = field(default_factory=dict)
 
 
