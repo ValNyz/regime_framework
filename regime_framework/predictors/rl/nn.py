@@ -106,10 +106,10 @@ class _NNRLBase(RLBasePredictor):
         total_timesteps: int,
         warm: bool,
     ) -> None:
-        # Mono-coin in this commit: use the first env (target). Multi-coin
-        # via vec_env comes in commit 3 — it'll wrap N envs in parallel.
-        features, closes = envs_data[0]
-        env = self._build_env(features, closes)
+        # Multi-coin: build a SubprocVecEnv (or DummyVecEnv) wrapping N coin
+        # envs in parallel. The agent collects transitions from all coins
+        # interleaved — better generalization than serial concatenation.
+        env = self._build_vec_env(envs_data)
         if warm and self._algo is not None:
             # FT: continue training from existing weights + replay buffer
             self._algo.set_env(env)
@@ -117,6 +117,23 @@ class _NNRLBase(RLBasePredictor):
         else:
             self._algo = self._make_algo(env)
             self._algo.learn(total_timesteps=total_timesteps)
+
+    def _build_vec_env(self, envs_data: list[tuple[np.ndarray, np.ndarray]]):
+        """Build SB3 vec_env from N coin envs. Single coin → DummyVecEnv of 1.
+
+        Uses DummyVecEnv (single-process) rather than SubprocVecEnv: our envs
+        are pure Python + numpy and the bottleneck is the policy forward pass
+        on GPU, not env stepping. Subprocess overhead would dominate.
+        """
+        from stable_baselines3.common.vec_env import DummyVecEnv
+
+        def _make(features: np.ndarray, closes: np.ndarray):
+            def _f():
+                return self._build_env(features, closes)
+            return _f
+
+        env_fns = [_make(f, c) for (f, c) in envs_data]
+        return DummyVecEnv(env_fns)
 
     def _act(self, obs: np.ndarray):
         if self._algo is None:

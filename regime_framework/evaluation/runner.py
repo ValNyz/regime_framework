@@ -162,7 +162,10 @@ class BenchmarkRunner:
         # Cache of extra-coin (X, y, dates) keyed by coin.target. Populated on
         # first call to _stack_with_target so CV folds don't re-run the entire
         # feature pipeline for ETH/SOL/etc on every fold.
-        self._extra_coin_cache: dict[str, tuple[pd.DataFrame, pd.Series, pd.Series]] = {}
+        # Cache: coin.target -> (X, y, dates, df). df has 'close' price column,
+        # required by multi-coin-aware predictors (RL agents need price series
+        # for reward; pretrained fine_tuned needs them for embedding).
+        self._extra_coin_cache: dict[str, tuple[pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]] = {}
 
     def run(self) -> dict:
         cfg = self.cfg
@@ -598,6 +601,14 @@ class BenchmarkRunner:
             d_te = dates.iloc[test_idx]
             df_te = df.loc[X_te.index]
 
+            # Capture target's pre-stacked data (before _stack_with_target
+            # mixes in extras) — multi-coin-aware predictors (RL, pretrained
+            # fine_tuned) need separate per-coin views, not the stacked one.
+            target_pre_X = X_tr.copy()
+            target_pre_y = y_tr.copy()
+            target_pre_d = d_tr.copy()
+            target_pre_df = df.loc[X_tr.index].copy()
+
             # Multi-coin: stack target+extras into the train fold
             if cfg.training.extra_coins:
                 X_tr_stacked, y_tr_stacked, d_tr_stacked = self._stack_with_target(
@@ -636,6 +647,19 @@ class BenchmarkRunner:
             )
 
             baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
+
+            # Multi-coin-aware predictors (RL agents, pretrained fine_tuned)
+            # need per-coin price series, not the stacked X. Push them now,
+            # before fit() is called inside _fit_eval_loop.
+            if cfg.training.extra_coins:
+                self._push_multi_coin_data_to_predictors(
+                    predictors, cfg,
+                    target_X=target_pre_X, target_y=target_pre_y,
+                    target_d=target_pre_d, target_df=target_pre_df,
+                    fold_d_start=target_pre_d.iloc[0],
+                    fold_d_end=target_pre_d.iloc[-1],
+                )
+
             fold_results, fold_predictions = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
             )
@@ -1097,6 +1121,57 @@ class BenchmarkRunner:
     # -------------------------------------------------------------------
     # Multi-coin training data
     # -------------------------------------------------------------------
+    def _push_multi_coin_data_to_predictors(
+        self,
+        predictors: list[BasePredictor],
+        cfg: RunConfig,
+        target_X: pd.DataFrame,
+        target_y: pd.Series,
+        target_d: pd.Series,
+        target_df: pd.DataFrame,
+        fold_d_start,
+        fold_d_end,
+    ) -> None:
+        """Build per-coin (X, y, dates, df) views clipped to the fold's date
+        range and push them onto every multi-coin-aware predictor in the list.
+        Predictors that don't opt in (no `is_multi_coin_aware` attr) are skipped.
+
+        Filters extras to the same date window as the target's fold so the
+        multi-coin training stays consistent with the rolling-window
+        philosophy (constant timespan across all coins).
+        """
+        target_data = {
+            "X": target_X, "y": target_y, "dates": target_d, "df": target_df,
+        }
+
+        # Build extras dict — read from cache (filled lazily by _stack_with_target)
+        extras_data: dict[str, dict] = {}
+        for coin in cfg.training.extra_coins:
+            cached = self._extra_coin_cache.get(coin.target)
+            if cached is None:
+                continue  # not yet loaded — _stack_with_target loads on first call
+            Xc, yc, dc, dfc = cached
+            # Clip to fold's date range (target_d_start <= date <= target_d_end)
+            keep = (dc >= fold_d_start) & (dc <= fold_d_end)
+            if not keep.any():
+                continue
+            Xc_w = Xc.loc[keep].reset_index(drop=True)
+            yc_w = yc.loc[keep].reset_index(drop=True)
+            dc_w = dc.loc[keep].reset_index(drop=True)
+            # df has full coin history; filter on the same date condition
+            df_keep = (dfc["date"] >= fold_d_start) & (dfc["date"] <= fold_d_end)
+            dfc_w = dfc.loc[df_keep].reset_index(drop=True)
+            # Only include if X and df align in length (drop coins where they don't)
+            if len(Xc_w) >= 2 and len(dfc_w) >= 2 and len(Xc_w) == len(dfc_w):
+                extras_data[coin.target] = {
+                    "X": Xc_w, "y": yc_w, "dates": dc_w, "df": dfc_w,
+                }
+
+        # Push to opt-in predictors only
+        for p in predictors:
+            if getattr(p, "is_multi_coin_aware", False):
+                p.set_multi_coin_data(target_data, extras_data)
+
     def _build_coin_data(
         self, cfg: RunConfig, coin: ExtraCoinSpec,
     ) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]:
@@ -1179,11 +1254,11 @@ class BenchmarkRunner:
                 cached = self._extra_coin_cache.get(coin.target)
                 if cached is None:
                     console.print(f"[cyan]  loading extra coin: {coin.target}[/cyan]")
-                    Xc, yc, dc, _ = self._build_coin_data(cfg, coin)
-                    self._extra_coin_cache[coin.target] = (Xc, yc, dc)
+                    Xc, yc, dc, dfc = self._build_coin_data(cfg, coin)
+                    self._extra_coin_cache[coin.target] = (Xc, yc, dc, dfc)
                 else:
                     console.print(f"[dim]  cached extra coin: {coin.target}[/dim]")
-                    Xc, yc, dc = cached
+                    Xc, yc, dc, dfc = cached
                 Xc = Xc.copy()
                 Xc["coin_id"] = coin.target
                 # Align columns with target
