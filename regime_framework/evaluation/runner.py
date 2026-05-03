@@ -336,14 +336,19 @@ class BenchmarkRunner:
             save_label_plots(df, labels, PLOTS_DIR, cfg, xlim_dates=oos_span)
             self._label_plots_saved = True
 
-        console.print("[bold]Signal analysis (lift + MI on train)[/bold]")
-        try:
-            ranking = rank_signals(X_tr, y_tr)
-            top10 = ranking.head(10)
-            self._print_signal_ranking(top10)
-            ranking.to_csv(RESULTS_DIR / "signal_ranking.csv", index=False)
-        except Exception as e:
-            console.print(f"[yellow]signal_analysis skipped: {e}[/yellow]")
+        # Signal analysis is a separate concern (its own `regime-run signals`
+        # subcommand). The CV path already skips it; running it here too made
+        # single-split runs gratuitously slower than CV runs. Now: only run
+        # when the user explicitly invoked `signals` (empty families).
+        if not cfg.predictors.families:
+            console.print("[bold]Signal analysis (lift + MI on train)[/bold]")
+            try:
+                ranking = rank_signals(X_tr, y_tr)
+                top10 = ranking.head(10)
+                self._print_signal_ranking(top10)
+                ranking.to_csv(RESULTS_DIR / "signal_ranking.csv", index=False)
+            except Exception as e:
+                console.print(f"[yellow]signal_analysis skipped: {e}[/yellow]")
 
         predictors = _build_predictors(cfg)
         # Single-split has no fold concept — drop FT variants (they would just
