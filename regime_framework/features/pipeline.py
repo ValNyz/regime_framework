@@ -55,9 +55,25 @@ class FeaturePipeline:
             print(f"  external:  {ext.shape[1]} features")
 
         if self.use_trading_signals:
-            ts = compute_trading_signal_features(df, self.trading_signals_yaml)
+            # Make funding rate available to funding-type signals
+            funding_series = None
+            if self.target_funding_path is not None and self.target_funding_path.exists():
+                try:
+                    from ..data.loaders import load_parquet_or_feather
+                    fund = load_parquet_or_feather(self.target_funding_path)
+                    fund_col = "open" if "open" in fund.columns else "funding_rate"
+                    merged = pd.merge_asof(
+                        df[["date"]].sort_values("date"),
+                        fund[["date", fund_col]].rename(columns={fund_col: "fr"}).sort_values("date"),
+                        on="date", direction="backward",
+                    )
+                    funding_series = merged["fr"].astype(float)
+                    funding_series.index = df.index
+                except Exception as e:
+                    print(f"  WARN: failed to load funding for trading signals: {e}")
+            ts = compute_trading_signal_features(df, self.trading_signals_yaml, funding=funding_series)
             feats.append(ts)
-            print(f"  signals:   {ts.shape[1]} features")
+            print(f"  signals:   {ts.shape[1]} usable features")
 
         if not feats:
             raise ValueError("No feature group enabled in FeaturePipeline.")
