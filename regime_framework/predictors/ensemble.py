@@ -72,6 +72,13 @@ class EnsemblePredictor(BasePredictor):
         """
         self._prior_kappas = {k: float(v) for k, v in kappas.items() if not np.isnan(v)}
 
+    def get_effective_bases(self) -> list[str]:
+        """Names of base predictors actually used in this fold's vote — i.e.
+        post-deduplication (cold ensembles → cold bases only; FT ensembles →
+        FT bases only). For runner display, never the full unfiltered set.
+        """
+        return list(self._fold_base_probas.keys())
+
     # ------------------------------------------------------------------
     # Standard predictor interface
     # ------------------------------------------------------------------

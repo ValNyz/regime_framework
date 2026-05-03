@@ -373,10 +373,13 @@ class BenchmarkRunner:
                     predictor.fit(X_tr, y_tr, d_tr, df_tr)  # no-op
                     pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
                     _evaluate(predictor, pred_arr, t0)
-                    n_bases = len(per_predictor_probas)
+                    # Use the post-dedup base list (cold ensembles see cold
+                    # bases only; FT ensembles see FT bases only) — not the
+                    # raw runner-side dict which has both flavors.
+                    eff_bases = predictor.get_effective_bases()
                     console.print(
-                        f"      [dim]ensemble over {n_bases} base predictors: "
-                        f"{', '.join(per_predictor_probas.keys())}[/dim]"
+                        f"      [dim]ensemble over {len(eff_bases)} base predictors: "
+                        f"{', '.join(eff_bases)}[/dim]"
                     )
                 except Exception as e:
                     console.print(f"  [red]✘[/red] {predictor.name}: {e}")
