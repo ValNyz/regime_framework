@@ -208,7 +208,12 @@ class RLConfig:
     huber_total_timesteps: int | None = None
     huber_alpha: float = 1e-4
     huber_epsilon: float = 1.35
-    huber_max_iter: int = 200
+    # Bumped from sklearn's default of 200 — Huber's lbfgs solver routinely
+    # fails to converge in 200 iterations on FQI's noisy Q-targets (the
+    # bootstrap targets shift each iteration, and IRLS reweighting compounds
+    # the noise). 1000 hits convergence on real data without much extra
+    # wall-clock since each iteration is cheap.
+    huber_max_iter: int = 1000
     huber_gamma: float = 0.99
     huber_iterations: int = 20
     histgb_total_timesteps: int | None = None
