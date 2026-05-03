@@ -28,6 +28,13 @@ def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _seed_torch(seed: int = 42) -> None:
+    """Deterministic init so cold and FT variants share fold-1 starting weights."""
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 class _PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 4096):
         super().__init__()
@@ -189,6 +196,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
                 print(f"      {self.name} epoch {epoch+1}/{epochs} loss={tot/max(n,1):.4f} lr={scheduler.get_last_lr()[0]:.2e}")
 
     def _cold_fit(self, X_train, y_train, dates_train, df_train):
+        _seed_torch()
         device, Xs, loader, weight = self._build_loader_and_weights(X_train, y_train)
         self.model = _TST(
             in_dim=Xs.shape[1],
@@ -205,6 +213,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         return self
 
     def _warm_fit(self, X_train, y_train, dates_train, df_train):
+        _seed_torch()
         device, _, loader, weight = self._build_loader_and_weights(X_train, y_train)
         self._train(loader, weight, device, lr=self.lr * self.ft_lr_scale, epochs=self.ft_epochs)
         return self

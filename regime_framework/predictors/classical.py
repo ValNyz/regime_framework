@@ -30,6 +30,18 @@ def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _seed_torch(seed: int = 42) -> None:
+    """Make torch + CUDA initialization deterministic so cold and FT variants
+    of MLP/GRU/LSTM/TST start from identical weights at fold 1. Called before
+    model construction and DataLoader creation in every fit() so the shuffle
+    order is also reproducible — leaves only warm-start as the variable when
+    comparing cold vs FT κ at fold N+1.
+    """
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def _reorder_proba_to_label_order(p: np.ndarray, src_classes: list) -> np.ndarray:
     """Reorder a (n, k) probability matrix so its columns match LABEL_ORDER.
     Used to align sklearn classifier outputs (which order columns by their
@@ -302,12 +314,14 @@ class MLPPredictor(BasePredictor):
                 print(f"      {log_prefix} epoch {epoch+1}/{epochs} loss={tot/max(n,1):.4f}")
 
     def _cold_fit(self, X_train, y_train, dates_train, df_train):
+        _seed_torch()
         device, Xs, loader, weight = self._build_loader_and_weights(X_train, y_train)
         self.model = _MLPNet(Xs.shape[1], len(LABEL_ORDER), self.hidden, self.dropout).to(device)
         self._train(loader, weight, device, lr=self.lr, epochs=self.epochs, log_prefix=self.name)
         return self
 
     def _warm_fit(self, X_train, y_train, dates_train, df_train):
+        _seed_torch()
         device, _, loader, weight = self._build_loader_and_weights(X_train, y_train)
         # Keep self.model weights — refit only scaler + continue training.
         self._train(loader, weight, device, lr=self.lr * self.ft_lr_scale,
