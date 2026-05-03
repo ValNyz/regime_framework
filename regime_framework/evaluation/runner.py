@@ -83,8 +83,6 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         _add(LSTMPredictor)
     if "transformer" in families:
         _add(TimeSeriesTransformerPredictor)
-    if "ensemble" in families:
-        _add(EnsemblePredictor)
     if "pretrained" in families:
         for model_name in cfg.predictors.pretrained_models:
             cls = PRETRAINED_REGISTRY.get(model_name)
@@ -98,6 +96,13 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 p = cls(mode=mode, horizon=cfg.predictors.forecast_horizon)
                 p.name = f"{cls.name}-{mode}"
                 out.append(p)
+
+    # Auto-attach Ensemble whenever any probabilistic base family is enabled.
+    # Ensemble itself is just an aggregator — it makes no sense without bases.
+    proba_families = {"classical", "deep_nets", "transformer"}
+    if cfg.predictors.include_ensemble and (proba_families & families):
+        _add(EnsemblePredictor)
+
     return out
 
 

@@ -137,7 +137,7 @@ class TrainingConfig:
 @dataclass
 class PredictorConfig:
     families: list[str] = field(default_factory=lambda: [
-        "classical", "rule_based", "deep_nets", "transformer", "pretrained", "ensemble"
+        "classical", "rule_based", "deep_nets", "transformer", "pretrained"
     ])
     pretrained_models: list[str] = field(default_factory=lambda: [
         "chronos_bolt_base",
@@ -157,6 +157,10 @@ class PredictorConfig:
     # fold's weights. Walk-forward only; auto-skipped under leave_one_out and
     # single-split (would leak / has no fold concept).
     include_finetune: bool = False
+    # When True, auto-attach Ensemble + (if include_finetune) Ensemble-FT to
+    # any run that has at least one probabilistic base family enabled
+    # (classical / deep_nets / transformer). Independent of `families` list.
+    include_ensemble: bool = True
 
 
 @dataclass
