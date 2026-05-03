@@ -112,8 +112,14 @@ class BasePretrainedPredictor(BasePredictor):
                 out[t] = "bull" if norm_slope > 0 else "bear"
             except Exception as e:
                 out[t] = "bull"
+                # Show the warning only on the FIRST failure to avoid spam.
+                # Common causes: shape-mismatch on first call (MOIRAI), library
+                # API change (transformers DynamicCache for TimeMoE), CUDA OOM.
+                # Subsequent forecasts may succeed; the run continues with a
+                # 'bull' fallback for failing bars.
                 if t == self.context_len:
-                    print(f"        WARN: forecast error: {e}")
+                    print(f"        WARN: {self.name} first-bar forecast failed "
+                          f"(falls back to 'bull' if it recurs): {e}")
         return out
 
     def _embed_series(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:

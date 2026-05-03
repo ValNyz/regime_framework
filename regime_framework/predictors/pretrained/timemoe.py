@@ -38,7 +38,10 @@ class TimeMoEPredictor(BasePretrainedPredictor):
         ctx_norm = (context - mean) / std
         x = torch.tensor(ctx_norm, dtype=torch.float32).reshape(1, -1).to(device)
         with torch.no_grad():
-            out = self._model.generate(x, max_new_tokens=horizon)
+            # use_cache=False bypasses DynamicCache which has API churn across
+            # transformers versions (e.g. seen_tokens was removed in 4.41+).
+            # Slower (no kv-caching) but stable across versions.
+            out = self._model.generate(x, max_new_tokens=horizon, use_cache=False)
         # Slice the new tokens
         forecast_norm = out[0, -horizon:].float().cpu().numpy()
         return forecast_norm * std + mean

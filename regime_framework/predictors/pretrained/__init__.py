@@ -8,6 +8,21 @@ Each wrapper exposes the same BasePredictor interface. Two modes per model:
 
 A6000-friendly defaults; CPU fallback when CUDA unavailable.
 """
+# Silence noisy third-party warnings emitted at import time:
+# - lightning.fabric: 'pkg_resources is deprecated' (setuptools >= 81)
+# - transformers / torch: misc DeprecationWarnings from older HF code paths
+import warnings as _warnings
+_warnings.filterwarnings(
+    "ignore",
+    message=".*pkg_resources is deprecated.*",
+    category=UserWarning,
+)
+_warnings.filterwarnings(
+    "ignore",
+    message=".*pkg_resources is deprecated.*",
+    category=DeprecationWarning,
+)
+
 from .base import BasePretrainedPredictor
 from .chronos import ChronosBoltBasePredictor, ChronosLargePredictor
 from .timesfm import TimesFMPredictor
