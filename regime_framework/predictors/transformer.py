@@ -127,6 +127,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
 
     def fit(self, X_train, y_train, dates_train, df_train):
         device = _device()
+        use_amp = device.type == "cuda"
         self.scaler = StandardScaler()
         Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
         cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
@@ -160,6 +161,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
         criterion = nn.CrossEntropyLoss(weight=weight)
+        amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
 
         self.model.train()
         for epoch in range(self.epochs):
@@ -168,11 +170,19 @@ class TimeSeriesTransformerPredictor(BasePredictor):
             for xb, yb in loader:
                 xb = xb.to(device); yb = yb.to(device)
                 optimizer.zero_grad()
-                logits = self.model(xb)
-                loss = criterion(logits, yb)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                optimizer.step()
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    logits = self.model(xb)
+                    loss = criterion(logits, yb)
+                if amp_scaler is not None:
+                    amp_scaler.scale(loss).backward()
+                    amp_scaler.unscale_(optimizer)   # for grad clipping
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    amp_scaler.step(optimizer)
+                    amp_scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    optimizer.step()
                 tot += float(loss.item()); n += 1
             scheduler.step()
             if (epoch + 1) % 5 == 0 or epoch == 0:
@@ -181,6 +191,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
 
     def predict(self, X_test, dates_test, df_test):
         device = _device()
+        use_amp = device.type == "cuda"
         Xs = self.scaler.transform(X_test.values).astype(np.float32)
         idx_to_cls = {i: c for i, c in enumerate(LABEL_ORDER)}
         dummy_y = np.zeros(len(Xs), dtype=np.int64)
@@ -188,7 +199,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
 
         self.model.train(False)
         preds = []
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
             # batched inference (seqs may be large)
             for i in range(0, len(seqs), self.batch_size):
                 batch = torch.from_numpy(seqs[i : i + self.batch_size].astype(np.float32)).to(device)

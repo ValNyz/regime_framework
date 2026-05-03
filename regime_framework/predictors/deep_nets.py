@@ -63,6 +63,7 @@ class _SeqPredictor(BasePredictor):
 
     def fit(self, X_train, y_train, dates_train, df_train):
         device = _device()
+        use_amp = device.type == "cuda"
         self.scaler = StandardScaler()
         Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
         cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
@@ -81,6 +82,7 @@ class _SeqPredictor(BasePredictor):
         self.model = _SeqRNN(Xs.shape[1], self.hidden, self.n_layers, len(LABEL_ORDER), kind=self.kind, dropout=self.dropout).to(device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         criterion = nn.CrossEntropyLoss(weight=weight)
+        amp_scaler = torch.amp.GradScaler("cuda") if use_amp else None
 
         self.model.train()
         for epoch in range(self.epochs):
@@ -89,10 +91,16 @@ class _SeqPredictor(BasePredictor):
             for xb, yb in loader:
                 xb = xb.to(device); yb = yb.to(device)
                 optimizer.zero_grad()
-                logits = self.model(xb)
-                loss = criterion(logits, yb)
-                loss.backward()
-                optimizer.step()
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    logits = self.model(xb)
+                    loss = criterion(logits, yb)
+                if amp_scaler is not None:
+                    amp_scaler.scale(loss).backward()
+                    amp_scaler.step(optimizer)
+                    amp_scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
                 tot += float(loss.item()); n += 1
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(f"      {self.name} epoch {epoch+1}/{self.epochs} loss={tot/max(n,1):.4f}")
@@ -100,16 +108,14 @@ class _SeqPredictor(BasePredictor):
 
     def predict(self, X_test, dates_test, df_test):
         device = _device()
+        use_amp = device.type == "cuda"
         Xs = self.scaler.transform(X_test.values).astype(np.float32)
-        cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
         idx_to_cls = {i: c for i, c in enumerate(LABEL_ORDER)}
-        # We need labels too to build sequences with the right alignment;
-        # we synthesize zeros and only use seqs.
         dummy_y = np.zeros(len(Xs), dtype=np.int64)
         seqs, _ = _make_sequences(Xs, dummy_y, self.seq_len)
 
         self.model.train(False)
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
             logits = self.model(torch.from_numpy(seqs.astype(np.float32)).to(device))
             pred = torch.argmax(logits, dim=1).cpu().numpy()
 
