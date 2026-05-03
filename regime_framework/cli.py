@@ -44,8 +44,9 @@ def run(
     ),
     cv_folds: int = typer.Option(
         0, "--cv-folds", "-k",
-        help="Number of CV folds. 0 = single split (default). Ignored in 'rolling' mode "
-             "(folds are derived from train/test window sizes).",
+        help="Number of CV folds. 0 = single split (default). In 'rolling' mode, "
+             "caps the consecutive fold iteration at this many (window + step "
+             "stay fixed; first N folds chronologically are used).",
     ),
     cv_mode: str = typer.Option(
         "walk_forward", "--cv-mode",

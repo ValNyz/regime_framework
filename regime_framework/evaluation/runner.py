@@ -466,11 +466,19 @@ class BenchmarkRunner:
                     f"(got tw={tw}, te={te})[/red]"
                 )
                 return None
-            # Estimate fold count for the header line.
-            est_folds = max(0, (len(X) - tw - purge - te) // step + 1)
+            # cv_folds (-k) caps the number of consecutive folds — useful for
+            # short runs without changing window or step. Without -k, the
+            # iterator yields every fold that fits in the data.
+            max_folds = int(cfg.split.cv_folds) if cfg.split.cv_folds and cfg.split.cv_folds > 0 else None
+            est_folds_full = max(0, (len(X) - tw - purge - te) // step + 1)
+            est_folds = min(est_folds_full, max_folds) if max_folds else est_folds_full
+            cap_note = (
+                f" (capped at {max_folds} via -k; data fits {est_folds_full})"
+                if max_folds and est_folds_full > est_folds else ""
+            )
             console.print(
                 f"\n[bold]Rolling-window CV[/bold] — train={tw} bars, test={te} bars, "
-                f"step={step} bars, purge={purge}, est. {est_folds} folds"
+                f"step={step} bars, purge={purge}, est. {est_folds} folds{cap_note}"
             )
             split_iter = rolling_walk_forward_splits(
                 n=len(X),
@@ -479,7 +487,9 @@ class BenchmarkRunner:
                 purge_bars=purge,
                 step_bars=step,
             )
-            # Override n_folds for the per-fold rule print downstream.
+            if max_folds:
+                import itertools
+                split_iter = itertools.islice(split_iter, max_folds)
             n_folds = est_folds
         else:
             console.print(
