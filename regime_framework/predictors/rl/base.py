@@ -43,10 +43,16 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
     """
     family = "rl"
     is_rl = True
-    supports_finetune = True
+    # FT semantics for RL predictors are ambiguous: the current implementation
+    # would re-train on the full train window with a reduced budget, which is
+    # neither classical "warm-start fine-tune" (only new data) nor a useful
+    # comparison to the cold variant. Disabled until the right flavor is
+    # decided — flip back to True (and likely add an `ft_only_new_data` knob)
+    # if/when we want it.
+    supports_finetune = False
     base_name: str = ""
     action_space_type: str = ""
-    approximator_kind: str = ""  # "nn" | "linear" | "lgb"
+    approximator_kind: str = ""  # "nn" | "linear" | "lgb" | "xgb" | "rf" | "ridge"
 
     def __init__(
         self,
