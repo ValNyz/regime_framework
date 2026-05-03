@@ -29,25 +29,38 @@ class _HuberRLBase(_FQIRLBase):
         alpha: float = 0.0001,    # L2 regularization
         epsilon: float = 1.35,    # Huber threshold (1.35 = sklearn default)
         max_iter: int = 200,
+        tol: float = 1e-3,        # looser than sklearn 1e-5; targets are noisy
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.alpha = float(alpha)
         self.epsilon = float(epsilon)
         self.max_iter = int(max_iter)
+        self.tol = float(tol)
 
     def _make_regressor(self) -> Any:
+        # Scale BOTH features and targets. FQI's Q-targets are tiny (~1e-4
+        # log-returns); without target scaling the gradient is too small to
+        # ever cross lbfgs's tolerance, so the solver always hits max_iter
+        # and emits a ConvergenceWarning. TransformedTargetRegressor wraps
+        # the y in a StandardScaler at fit and inverse-transforms at predict.
+        from sklearn.compose import TransformedTargetRegressor
         from sklearn.linear_model import HuberRegressor
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
-        return Pipeline([
+        feature_pipeline = Pipeline([
             ("scaler", StandardScaler()),
             ("huber", HuberRegressor(
                 alpha=self.alpha,
                 epsilon=self.epsilon,
                 max_iter=self.max_iter,
+                tol=self.tol,
             )),
         ])
+        return TransformedTargetRegressor(
+            regressor=feature_pipeline,
+            transformer=StandardScaler(),
+        )
 
 
 class HuberQ2Predictor(_HuberRLBase):

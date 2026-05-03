@@ -154,8 +154,8 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             iterations=rl_cfg.ridge_iterations)
         huber_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.huber_total_timesteps),
             alpha=rl_cfg.huber_alpha, epsilon=rl_cfg.huber_epsilon,
-            max_iter=rl_cfg.huber_max_iter, gamma=rl_cfg.huber_gamma,
-            iterations=rl_cfg.huber_iterations)
+            max_iter=rl_cfg.huber_max_iter, tol=rl_cfg.huber_tol,
+            gamma=rl_cfg.huber_gamma, iterations=rl_cfg.huber_iterations)
         histgb_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.histgb_total_timesteps),
             max_iter=rl_cfg.histgb_max_iter, max_depth=rl_cfg.histgb_max_depth,
             learning_rate=rl_cfg.histgb_learning_rate,
