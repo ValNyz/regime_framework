@@ -163,6 +163,112 @@ def _plot_C(df, smooth, runs, out_path, title_suffix: str, split_dt=None) -> Non
     plt.close(fig)
 
 
+def plot_synth_equity_multi(
+    df: pd.DataFrame,
+    predictions_by_name: dict[str, pd.Series],
+    out_path: Path,
+    title_suffix: str,
+    split_dt=None,
+    denoise_window: int = 168,
+) -> None:
+    """Overlay synthetic regime-trader equity curves for multiple predictors.
+
+    Each predictor's predictions → smoothed → long_when_bull/short_when_bear/flat
+    → cumulative equity. All curves on the same log y-axis with the actual price
+    in dim black for reference.
+    """
+    closes = df["close"].values.astype(float)
+    dates = pd.to_datetime(df["date"].values)
+    log_ret = np.zeros(len(closes))
+    log_ret[1:] = np.log(closes[1:] / closes[:-1])
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    ax.plot(dates, closes, color="black", linewidth=0.7, alpha=0.35, label="close (actual)")
+
+    cmap = plt.get_cmap("tab10")
+    items = sorted(predictions_by_name.items())  # stable color assignment
+    for i, (name, preds) in enumerate(items):
+        try:
+            smooth = denoise_labels(preds, window=denoise_window)
+            sign = np.zeros(len(smooth))
+            vals = smooth.values
+            sign[vals == "bull"] = +1.0
+            sign[vals == "bear"] = -1.0
+            synth_log_eq = np.cumsum(sign * log_ret)
+            synth_eq = np.exp(synth_log_eq) * float(closes[0])
+            ax.plot(dates, synth_eq, color=cmap(i % 10), linewidth=1.2,
+                    alpha=0.9, label=name)
+        except Exception:
+            continue
+
+    ax.set_yscale("log")
+    ax.set_ylabel("price / equity (log)")
+    ax.set_title(f"(B-multi) [{title_suffix}] synth equity per predictor")
+    if split_dt is not None:
+        ax.axvline(split_dt, color="blue", linestyle="--", linewidth=1.2, alpha=0.7)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", framealpha=0.9, fontsize=8, ncols=2)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def plot_regime_step_multi(
+    df: pd.DataFrame,
+    predictions_by_name: dict[str, pd.Series],
+    out_path: Path,
+    title_suffix: str,
+    split_dt=None,
+    denoise_window: int = 168,
+) -> None:
+    """Plot price (top) + one row per predictor showing its bull/bear track (bottom)."""
+    closes = df["close"].values.astype(float)
+    dates = pd.to_datetime(df["date"].values)
+    n_pred = len(predictions_by_name)
+    if n_pred == 0:
+        return
+
+    fig = plt.figure(figsize=(14, 4 + 0.6 * n_pred))
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, max(0.3 * n_pred, 1.0)])
+    ax_price = fig.add_subplot(gs[0])
+    ax_panel = fig.add_subplot(gs[1], sharex=ax_price)
+
+    ax_price.plot(dates, closes, color="black", linewidth=0.7)
+    ax_price.set_yscale("log")
+    ax_price.set_ylabel("close (log)")
+    ax_price.set_title(f"(A-multi) [{title_suffix}] regime track per predictor")
+    ax_price.grid(True, alpha=0.3)
+    if split_dt is not None:
+        ax_price.axvline(split_dt, color="blue", linestyle="--", linewidth=1.2, alpha=0.7)
+
+    items = sorted(predictions_by_name.items())
+    yticks = []
+    yticklabels = []
+    for i, (name, preds) in enumerate(items):
+        try:
+            smooth = denoise_labels(preds, window=denoise_window)
+            runs = _compute_runs(df, smooth)
+            for lab, s_dt, e_dt in runs:
+                col = LABEL_COLORS.get(lab, "gray")
+                ax_panel.hlines(i, s_dt, e_dt, color=col, linewidth=6)
+            yticks.append(i)
+            yticklabels.append(name)
+        except Exception:
+            yticks.append(i)
+            yticklabels.append(f"{name} (err)")
+
+    ax_panel.set_yticks(yticks)
+    ax_panel.set_yticklabels(yticklabels)
+    ax_panel.set_ylim(-0.5, n_pred - 0.5)
+    ax_panel.grid(True, alpha=0.3)
+    if split_dt is not None:
+        ax_panel.axvline(split_dt, color="blue", linestyle="--", linewidth=1.2, alpha=0.7)
+    ax_price.legend(handles=_legend_handles(), loc="upper left", framealpha=0.9)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def save_label_plots(df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: RunConfig) -> None:
     smooth = denoise_labels(labels, window=168)
     runs = _compute_runs(df, smooth)

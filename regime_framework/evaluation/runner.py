@@ -215,6 +215,11 @@ class BenchmarkRunner:
                 predictor_name=best.name,
                 split_dt=d_te.iloc[0],
             )
+            # Multi-classifier overlay (single-split)
+            if len(per_predictor_predictions) > 1:
+                self._save_fold_plot_multi(
+                    cfg, df, "single", 0, per_predictor_predictions, X_te, d_te,
+                )
             # Feature importance from the best predictor
             best_obj = next((p for p in predictors if p.name == best.name), None)
             if best_obj is not None:
@@ -360,7 +365,7 @@ class BenchmarkRunner:
                     "baseline_acc": baseline_acc,
                 })
 
-            # Save prediction plots for this fold's best predictor
+            # Save prediction plots for this fold's best predictor + multi overlay
             if fold_results:
                 best_fold = max(
                     fold_results, key=lambda r: r.kappa if not np.isnan(r.kappa) else -2
@@ -369,6 +374,11 @@ class BenchmarkRunner:
                     self._save_fold_plot(
                         cfg, df, mode, fold_id, best_fold,
                         X_te, d_te, fold_predictions[best_fold.name],
+                    )
+                if len(fold_predictions) > 1:
+                    self._save_fold_plot_multi(
+                        cfg, df, mode, fold_id, fold_predictions,
+                        X_te, d_te,
                     )
 
         if not per_fold_rows:
@@ -672,6 +682,41 @@ class BenchmarkRunner:
             f"[bold cyan]Multi-coin train data: {n_coins} coins, {n_total} total bars[/bold cyan]"
         )
         return X_combined, y_combined, dates_combined
+
+    def _save_fold_plot_multi(
+        self, cfg: RunConfig, df: pd.DataFrame, mode: str, fold_id: int,
+        fold_predictions: dict, X_te: pd.DataFrame, d_te: pd.Series,
+    ) -> None:
+        """Save multi-classifier plots for one CV fold (B-multi synth equity overlay,
+        A-multi step panel)."""
+        from ..visualization.regime_plots import plot_synth_equity_multi, plot_regime_step_multi
+
+        preds_dict: dict[str, pd.Series] = {}
+        for name, pred_arr in fold_predictions.items():
+            s = pd.Series("", index=df.index, dtype=object)
+            if len(pred_arr) == len(X_te):
+                s.loc[X_te.index] = pred_arr
+            preds_dict[name] = s
+
+        suffix = f"{cfg.target}-{cfg.timeframe}-{mode}-fold{fold_id+1}"
+        split_dt = d_te.iloc[0]
+        try:
+            plot_synth_equity_multi(
+                df, preds_dict,
+                PLOTS_DIR / f"B_multi_{mode}_fold{fold_id+1}.png",
+                suffix, split_dt,
+            )
+            plot_regime_step_multi(
+                df, preds_dict,
+                PLOTS_DIR / f"A_multi_{mode}_fold{fold_id+1}.png",
+                suffix, split_dt,
+            )
+            console.print(
+                f"      [dim]multi-classifier plots: A/B_multi_{mode}_fold{fold_id+1}.png "
+                f"({len(preds_dict)} predictors)[/dim]"
+            )
+        except Exception as e:
+            console.print(f"      [yellow]multi-plot save failed: {e}[/yellow]")
 
     def _save_fold_plot(
         self, cfg: RunConfig, df: pd.DataFrame, mode: str, fold_id: int,
