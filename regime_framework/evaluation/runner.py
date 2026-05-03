@@ -1175,7 +1175,7 @@ class BenchmarkRunner:
 
         # We want a fold-specific filename — temporarily swap PLOT paths then restore
         from ..visualization.regime_plots import (
-            denoise_labels, _compute_runs, _plot_A, _plot_B, _plot_C,
+            denoise_labels, _compute_runs, _plot_A, _plot_B,
         )
         smooth = denoise_labels(out, window=168)   # 7 days at 1h TF
         runs = _compute_runs(df, smooth)
@@ -1187,9 +1187,8 @@ class BenchmarkRunner:
             # _plot_B takes (raw_labels, smooth, runs) — raw drives the equity
             # curve (matches synth_gain metric), smooth drives the regime bands.
             _plot_B(df, out, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
-            _plot_C(df, smooth, runs, out_dir / f"C_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
             console.print(
-                f"      [dim]plots saved: A/B/C_pred_{mode}_fold{fold_id+1}.png "
+                f"      [dim]plots saved: A/B_pred_{mode}_fold{fold_id+1}.png "
                 f"(predictor={best.name}, κ={best.kappa:+.3f})[/dim]"
             )
         except Exception as e:

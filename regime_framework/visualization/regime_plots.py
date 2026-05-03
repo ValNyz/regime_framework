@@ -12,8 +12,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-from matplotlib.dates import date2num
 import numpy as np
 import pandas as pd
 
@@ -136,37 +134,8 @@ def _plot_B(
     plt.close(fig)
 
 
-def _plot_C(df, smooth, runs, out_path, title_suffix: str, split_dt=None) -> None:
-    dates_dt = pd.to_datetime(df["date"].values)
-    dates_num = date2num(dates_dt)
-    closes = df["close"].values
-    labs = smooth.values
-
-    pts = np.column_stack([dates_num, closes])
-    segments = np.stack([pts[:-1], pts[1:]], axis=1)
-    seg_colors = []
-    for i in range(len(labs) - 1):
-        lab = labs[i] if labs[i] != "" else (labs[i + 1] if i + 1 < len(labs) else "")
-        seg_colors.append(LABEL_COLORS.get(lab, "#cccccc"))
-
-    fig, ax = plt.subplots(figsize=(14, 6))
-    lc = LineCollection(segments, colors=seg_colors, linewidths=1.0)
-    ax.add_collection(lc)
-    ax.set_xlim(dates_num.min(), dates_num.max())
-    valid = closes[~np.isnan(closes.astype(float))]
-    ax.set_ylim(valid.min() * 0.9, valid.max() * 1.1)
-    ax.set_yscale("log")
-    ax.xaxis_date()
-    ax.set_ylabel("close (log)")
-    ax.set_title(f"(C) [{title_suffix}] price line — color = regime")
-    ax.grid(True, alpha=0.3)
-    if split_dt is not None:
-        ax.axvline(date2num(split_dt), color="blue", linestyle="--", linewidth=1.2, alpha=0.7)
-    ax.legend(handles=_legend_handles(), loc="upper left", framealpha=0.9)
-    fig.autofmt_xdate()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=120)
-    plt.close(fig)
+# _plot_C (price line color-coded by regime) was removed — duplicated info
+# already shown by plot A's regime bands and plot B's equity curve.
 
 
 def plot_stitched_oos_equity(
@@ -343,7 +312,6 @@ def save_label_plots(df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: Ru
     _plot_A(df, runs, out_dir / "A_labels_background.png", suffix)
     # Equity uses raw labels (matches metric); regime bands use smoothed.
     _plot_B(df, labels, smooth, runs, out_dir / "B_labels_synth.png", suffix)
-    _plot_C(df, smooth, runs, out_dir / "C_labels_multicolor.png", suffix)
 
 
 def save_prediction_plots(
@@ -357,4 +325,3 @@ def save_prediction_plots(
     # Equity uses raw predictions (matches synth_gain console metric);
     # regime bands keep the 7-day smoothing for visual cleanliness.
     _plot_B(df, predictions, smooth, runs, out_dir / "B_predictions_synth.png", suffix, split_dt)
-    _plot_C(df, smooth, runs, out_dir / "C_predictions_multicolor.png", suffix, split_dt)
