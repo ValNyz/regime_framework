@@ -166,14 +166,29 @@ def plot_stitched_oos_equity(
         if len(preds) == len(idx):
             out.loc[idx] = preds
 
+    # Determine the OOS span — first bar of fold 0 to last bar of last fold.
+    # Plot only this span (zooming out to 2019 just dilutes the OOS detail).
+    oos_first = min((f["test_index"][0] for f in folds if len(f["test_index"])), default=None)
+    oos_last = max((f["test_index"][-1] for f in folds if len(f["test_index"])), default=None)
+    if oos_first is not None and oos_last is not None:
+        oos_slice = (df.index >= oos_first) & (df.index <= oos_last)
+    else:
+        oos_slice = np.ones(len(df), dtype=bool)
+
     # Use raw stitched predictions (no smoothing) — matches the per-fold
     # synth_gain metric. Smoothing was a 7-day visual cleanup that diverged
     # the equity curve from the reported numbers.
     synth_eq, _ = synth_equity_curve(closes, out.values)
+    # Renormalize equity so the curve starts at the actual OOS-start price
+    # (otherwise the equity ramps up from $closes[0] = the 2019 price).
+    if oos_first is not None:
+        first_pos = int(np.where(oos_slice)[0][0])
+        synth_eq = synth_eq * (closes[first_pos] / synth_eq[first_pos])
 
     fig, ax = plt.subplots(figsize=(14, 7))
-    ax.plot(dates, closes, color="black", linewidth=0.7, alpha=0.4, label="close (actual)")
-    ax.plot(dates, synth_eq, color="#1f77b4", linewidth=1.5,
+    ax.plot(dates[oos_slice], closes[oos_slice], color="black", linewidth=0.7,
+            alpha=0.4, label="close (actual)")
+    ax.plot(dates[oos_slice], synth_eq[oos_slice], color="#1f77b4", linewidth=1.5,
             label="OOS synth equity (best predictor per fold, stitched)")
 
     # Fold boundary lines + per-fold annotation (predictor name + kappa)
