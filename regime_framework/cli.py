@@ -74,10 +74,23 @@ def run(
              "(non-overlapping consecutive tests).",
     ),
     feature_importance: bool = typer.Option(
-        True, "--feature-importance/--no-feature-importance",
+        None, "--feature-importance/--no-feature-importance",
         help="Compute + display feature importance for the best classical "
-             "predictor (per fold + end of CV). Disable to save runtime / "
-             "console noise when you only care about kappa / gain.",
+             "predictor (per fold + end of CV). When unset, the preset's "
+             "predictors.feature_importance wins. CLI overrides preset only "
+             "when the flag is explicitly passed.",
+    ),
+    plots: bool = typer.Option(
+        None, "--plots/--no-plots",
+        help="Master plot switch. --no-plots kills ALL plot output (label, "
+             "prediction, fold, multi, stitched). Defaults to preset value.",
+    ),
+    fold_plots: bool = typer.Option(
+        None, "--fold-plots/--no-fold-plots",
+        help="Per-fold plots only (best-predictor + multi-overlay per CV "
+             "fold). --no-fold-plots keeps once-per-run summary plots "
+             "(label, stitched OOS) but drops the per-fold ones — useful "
+             "when running with 50+ rolling folds.",
     ),
 ):
     """Run the full benchmark on a preset config."""
@@ -115,7 +128,13 @@ def run(
         cfg.split.cv_mode = cv_mode
         cfg.split.min_train_fraction = float(min_train_fraction)
 
-    cfg.predictors.feature_importance = bool(feature_importance)
+    # CLI flags override preset only when explicitly passed (None = unset).
+    if feature_importance is not None:
+        cfg.predictors.feature_importance = bool(feature_importance)
+    if plots is not None:
+        cfg.plots.enabled = bool(plots)
+    if fold_plots is not None:
+        cfg.plots.per_fold = bool(fold_plots)
 
     from .evaluation.runner import BenchmarkRunner
     runner = BenchmarkRunner(cfg)

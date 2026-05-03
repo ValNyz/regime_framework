@@ -192,6 +192,23 @@ class PredictorConfig:
 
 
 @dataclass
+class PlotConfig:
+    """Two-level plot output control:
+
+    enabled=False kills ALL plots (label, prediction, fold, multi, stitched).
+    Useful when you only want metrics (e.g. on a CI runner with no display).
+
+    per_fold=False keeps the once-per-run plots (label plots, end-of-CV
+    stitched OOS) but drops the per-fold plots (best-predictor plots and
+    multi-overlay plots, which scale with fold count). With 50+ rolling
+    folds, per-fold plots dominate the plots/ directory; disabling them
+    keeps the summary visualizations without the clutter.
+    """
+    enabled: bool = True
+    per_fold: bool = True
+
+
+@dataclass
 class RunConfig:
     target: str = "BTC"
     venue: str = "binance"
@@ -205,6 +222,7 @@ class RunConfig:
     split: SplitConfig = field(default_factory=SplitConfig)
     predictors: PredictorConfig = field(default_factory=PredictorConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    plots: PlotConfig = field(default_factory=PlotConfig)
     seed: int = 42
 
     @classmethod
@@ -319,6 +337,7 @@ class RunConfig:
             split=SplitConfig(**data.get("split", {})),
             predictors=PredictorConfig(**data.get("predictors", {})),
             training=training_cfg,
+            plots=PlotConfig(**data.get("plots", {})),
             seed=data.get("seed", 42),
         )
 

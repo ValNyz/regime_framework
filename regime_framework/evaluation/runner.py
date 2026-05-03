@@ -196,8 +196,9 @@ class BenchmarkRunner:
         self.labels = labels
 
         # ----- 3. Save label plots immediately -----
-        console.print("[bold]Saving label plots[/bold]")
-        save_label_plots(df, labels, PLOTS_DIR, cfg)
+        if cfg.plots.enabled:
+            console.print("[bold]Saving label plots[/bold]")
+            save_label_plots(df, labels, PLOTS_DIR, cfg)
 
         # ----- 4. Features -----
         console.print("[bold]Computing features[/bold]")
@@ -303,19 +304,25 @@ class BenchmarkRunner:
                 df, labels, X.index, X_tr.index, X_te.index,
                 per_predictor_predictions[best.name],
             )
-            console.print(
-                f"[bold]Best predictor: {best.name}[/bold] "
-                f"(κ={best.kappa:+.3f}, acc={best.accuracy:.3f}) — saving prediction plots"
-            )
-            save_prediction_plots(
-                df, best_pred, PLOTS_DIR, cfg,
-                predictor_name=best.name,
-                split_dt=d_te.iloc[0],
-            )
-            # Multi-classifier overlay (single-split)
-            if len(per_predictor_predictions) > 1:
-                self._save_fold_plot_multi(
-                    cfg, df, "single", 0, per_predictor_predictions, X_te, d_te,
+            if cfg.plots.enabled:
+                console.print(
+                    f"[bold]Best predictor: {best.name}[/bold] "
+                    f"(κ={best.kappa:+.3f}, acc={best.accuracy:.3f}) — saving prediction plots"
+                )
+                save_prediction_plots(
+                    df, best_pred, PLOTS_DIR, cfg,
+                    predictor_name=best.name,
+                    split_dt=d_te.iloc[0],
+                )
+                # Multi-classifier overlay (single-split)
+                if len(per_predictor_predictions) > 1:
+                    self._save_fold_plot_multi(
+                        cfg, df, "single", 0, per_predictor_predictions, X_te, d_te,
+                    )
+            else:
+                console.print(
+                    f"[bold]Best predictor: {best.name}[/bold] "
+                    f"(κ={best.kappa:+.3f}, acc={best.accuracy:.3f}) [dim](plots disabled)[/dim]"
                 )
             # Feature importance from the best CLASSICAL predictor with native
             # importance (skip NNs — permutation is too slow and not native).
@@ -488,12 +495,16 @@ class BenchmarkRunner:
                 step_bars=step,
             )
             if max_folds:
-                # Take the LATEST max_folds (chronologically most recent) —
-                # more relevant for current-strategy assessment. fold_id is
-                # preserved from the full sequence so it tells you the
-                # position in the original timeline.
+                # Take the LATEST max_folds (chronologically most recent) and
+                # renumber the kept folds 0..k-1 so console display + CSVs
+                # show clean Fold 1/18 ... 18/18 instead of stale chrono ids.
+                # The chronological position is still recoverable from the
+                # test_start / test_end date columns in the per_fold CSV.
                 all_folds = list(split_iter)
-                split_iter = iter(all_folds[-max_folds:])
+                last = all_folds[-max_folds:]
+                split_iter = iter([
+                    (tr, te_idx, new_id) for new_id, (tr, te_idx, _) in enumerate(last)
+                ])
             n_folds = est_folds
         else:
             console.print(
@@ -649,23 +660,27 @@ class BenchmarkRunner:
                 best_fold = max(
                     fold_results, key=lambda r: r.kappa if not np.isnan(r.kappa) else -2
                 )
-                if best_fold.name in fold_predictions:
-                    self._save_fold_plot(
-                        cfg, df, mode, fold_id, best_fold,
-                        X_te, d_te, fold_predictions[best_fold.name],
-                    )
+                # Per-fold plots: gated by both 'enabled' (master) and 'per_fold'.
+                if cfg.plots.enabled and cfg.plots.per_fold:
+                    if best_fold.name in fold_predictions:
+                        self._save_fold_plot(
+                            cfg, df, mode, fold_id, best_fold,
+                            X_te, d_te, fold_predictions[best_fold.name],
+                        )
+                    if len(fold_predictions) > 1:
+                        self._save_fold_plot_multi(
+                            cfg, df, mode, fold_id, fold_predictions,
+                            X_te, d_te,
+                        )
                 # Keep ALL predictors' predictions for this fold — used to
                 # build the stitched plot using the GLOBAL best predictor.
+                # Always recorded (cheap, lets the end-of-CV stitched plot
+                # work even if per-fold plots are disabled).
                 all_fold_preds.append({
                     "fold_id": fold_id,
                     "test_index": X_te.index,
                     "predictions": dict(fold_predictions),  # name -> ndarray
                 })
-                if len(fold_predictions) > 1:
-                    self._save_fold_plot_multi(
-                        cfg, df, mode, fold_id, fold_predictions,
-                        X_te, d_te,
-                    )
 
                 # Per-fold feature importance: best classical predictor with
                 # native importance for THIS fold (skip NNs).
@@ -702,7 +717,9 @@ class BenchmarkRunner:
         # fold test windows. Realistic: a single model deployed across the
         # full OOS timeline (vs the per-fold-best which would require an
         # oracle to know which model to use when).
-        if len(all_fold_preds) >= 2 and not per_fold_df.empty:
+        # Stitched OOS plot is a once-per-CV summary, gated only by the
+        # master 'enabled' flag (NOT per_fold — it survives --no-fold-plots).
+        if cfg.plots.enabled and len(all_fold_preds) >= 2 and not per_fold_df.empty:
             mean_kappa = per_fold_df.groupby("predictor")["kappa"].mean()
             best_name = str(mean_kappa.idxmax())
             best_mean = float(mean_kappa[best_name])
