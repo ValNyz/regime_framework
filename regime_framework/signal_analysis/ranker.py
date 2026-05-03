@@ -39,24 +39,29 @@ def rank_signals(
         print(f"  WARN: MI table failed ({e}); zeros.")
         mi = pd.DataFrame({"signal": list(X.columns), "mi": [0.0] * X.shape[1]})
 
-    if lift.empty:
-        # all features continuous — fall back to MI only
-        out = mi.copy()
-        out["max_abs_lift"] = float("nan")
-        out["lift_bull"] = float("nan")
-        out["lift_bear"] = float("nan")
-        out["n_triggers"] = 0
-        out["combined_score"] = (out["mi"] - out["mi"].mean()) / (out["mi"].std() + 1e-12)
-    else:
-        merged = lift.merge(mi, on="signal", how="outer")
-        # Fill NaN in numeric columns introduced by outer merge
-        for c in ("n_triggers", "max_abs_lift", "lift_bull", "lift_bear",
-                  "p_bull_cond", "p_bear_cond", "deviation", "mi"):
-            if c in merged.columns:
-                merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0.0)
-        z_lift = (merged["max_abs_lift"] - merged["max_abs_lift"].mean()) / (merged["max_abs_lift"].std() + 1e-12)
-        z_mi = (merged["mi"] - merged["mi"].mean()) / (merged["mi"].std() + 1e-12)
-        merged["combined_score"] = z_lift + z_mi
-        out = merged.sort_values("combined_score", ascending=False).reset_index(drop=True)
+    # Outer merge: every feature appears once. Binary features have lift_*; continuous have mi only.
+    merged = lift.merge(mi, on="signal", how="outer")
+    for c in ("n_triggers", "max_abs_lift", "lift_bull", "lift_bear",
+              "p_bull_cond", "p_bear_cond", "deviation", "mi"):
+        if c in merged.columns:
+            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0.0)
 
+    # Mark which features have a meaningful lift entry
+    has_lift = merged["n_triggers"] > 0 if "n_triggers" in merged.columns else pd.Series(False, index=merged.index)
+    merged["feature_kind"] = ["binary" if h else "continuous" for h in has_lift]
+
+    # Combined score:
+    # - For binary signals: z(MI) + z(max_abs_lift). Lift is a real, additional signal.
+    # - For continuous signals: z(MI) only. Lift is structurally zero — don't penalize.
+    z_mi = (merged["mi"] - merged["mi"].mean()) / (merged["mi"].std() + 1e-12)
+    if has_lift.any():
+        sub = merged.loc[has_lift, "max_abs_lift"]
+        mu, sd = float(sub.mean()), float(sub.std() + 1e-12)
+        z_lift = (merged["max_abs_lift"] - mu) / sd
+        z_lift = z_lift.where(has_lift, 0.0)
+    else:
+        z_lift = pd.Series(0.0, index=merged.index)
+
+    merged["combined_score"] = z_mi + z_lift
+    out = merged.sort_values("combined_score", ascending=False).reset_index(drop=True)
     return out

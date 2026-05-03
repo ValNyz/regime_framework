@@ -243,7 +243,8 @@ class BenchmarkRunner:
         if top10.empty:
             return
         table = Table(title="Top 10 features by combined predictive power", show_lines=False)
-        for col in ("signal", "n_triggers", "lift_bull", "lift_bear", "mi", "combined_score"):
+        col_order = ["signal", "feature_kind", "n_triggers", "lift_bull", "lift_bear", "mi", "combined_score"]
+        for col in col_order:
             if col in top10.columns:
                 table.add_column(col)
         def _nz_int(v) -> int:
@@ -262,14 +263,17 @@ class BenchmarkRunner:
                 return float("nan")
 
         for _, row in top10.iterrows():
-            table.add_row(
-                str(row["signal"]),
+            cells = [str(row["signal"])]
+            if "feature_kind" in top10.columns:
+                cells.append(str(row.get("feature_kind", "")))
+            cells.extend([
                 f"{_nz_int(row.get('n_triggers'))}",
                 f"{_nz_float(row.get('lift_bull')):.2f}",
                 f"{_nz_float(row.get('lift_bear')):.2f}",
                 f"{_nz_float(row.get('mi')):.4f}",
                 f"{_nz_float(row.get('combined_score')):+.2f}",
-            )
+            ])
+            table.add_row(*cells)
         console.print(table)
 
     def _print_summary(self, baseline_acc: float) -> None:

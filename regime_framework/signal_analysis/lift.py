@@ -46,29 +46,34 @@ def compute_lift_table(
     rows = []
     for col in X.columns:
         try:
-            v = np.asarray(X[col].values, dtype=float)  # coerce to float; NaN preserved
+            v = np.asarray(X[col].values, dtype=float)
         except (TypeError, ValueError):
-            # Non-numeric column — skip
             continue
 
-        if not np.isfinite(v).any():
+        finite_mask = np.isfinite(v)
+        if not finite_mask.any():
             continue
 
-        # Binarize. Fast-path for already 0/1 columns:
-        finite = np.isfinite(v)
-        unique_finite = np.unique(v[finite])
-        is_binary_already = (
+        unique_finite = np.unique(v[finite_mask])
+
+        # Lift only makes sense for genuinely binary signals (e.g. trading-signal
+        # features that fire 0 or 1). Continuous features are evaluated by MI
+        # in the companion module; thresholding them at an arbitrary cutoff
+        # produces meaningless 0-trigger or all-trigger rows.
+        is_binary = (
             len(unique_finite) <= 2
-            and float(unique_finite.min()) >= 0.0
-            and float(unique_finite.max()) <= 1.0
+            and unique_finite.min() >= 0.0
+            and unique_finite.max() <= 1.0
         )
-        if is_binary_already:
-            trig = (v >= 0.5) & finite
-        else:
-            trig = (v > binary_threshold) & finite
+        if not is_binary:
+            continue
+        trig = (v >= 0.5) & finite_mask
 
         n_trig = int(trig.sum())
         if n_trig < min_triggers:
+            continue
+        if n_trig >= int(0.99 * finite_mask.sum()):
+            # Always-on signal — lift = 1 mechanically
             continue
 
         try:
