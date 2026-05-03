@@ -31,9 +31,9 @@ def run(
     families: list[str] = typer.Option(
         ["classical", "rule_based", "deep_nets", "transformer", "pretrained"],
         "--family", "-f",
-        help="Predictor families: classical, rule_based, deep_nets, transformer, pretrained. "
-             "Accepts repeated flags (-f classical -f rule_based) OR comma-separated "
-             "(-f classical,rule_based).",
+        help="Predictor families: classical, rule_based, deep_nets, transformer, "
+             "pretrained, rl. Accepts repeated flags (-f classical -f rl) OR "
+             "comma-separated (-f classical,rl).",
     ),
     pretrained: list[str] | None = typer.Option(
         None, "--pretrained", "-p",
@@ -106,7 +106,7 @@ def run(
     flat_families: list[str] = []
     for f in families:
         flat_families.extend([x.strip() for x in str(f).split(",") if x.strip()])
-    valid = {"classical", "rule_based", "deep_nets", "transformer", "pretrained"}
+    valid = {"classical", "rule_based", "deep_nets", "transformer", "pretrained", "rl"}
     bad = [f for f in flat_families if f not in valid]
     if bad:
         raise typer.BadParameter(
