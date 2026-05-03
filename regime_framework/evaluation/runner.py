@@ -342,7 +342,7 @@ class BenchmarkRunner:
                     f"Valid: classical, rule_based, deep_nets, transformer, pretrained.[/red]"
                 )
                 return None
-            fold_results, _ = self._fit_eval_loop(
+            fold_results, fold_predictions = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
             )
 
@@ -355,6 +355,17 @@ class BenchmarkRunner:
                     "test_end": str(d_te.iloc[-1].date()),
                     "baseline_acc": baseline_acc,
                 })
+
+            # Save prediction plots for this fold's best predictor
+            if fold_results:
+                best_fold = max(
+                    fold_results, key=lambda r: r.kappa if not np.isnan(r.kappa) else -2
+                )
+                if best_fold.name in fold_predictions:
+                    self._save_fold_plot(
+                        cfg, df, mode, fold_id, best_fold,
+                        X_te, d_te, fold_predictions[best_fold.name],
+                    )
 
         if not per_fold_rows:
             console.print("[red]No folds produced — check min_train_fraction / data length[/red]")
@@ -653,6 +664,42 @@ class BenchmarkRunner:
             f"[bold cyan]Multi-coin train data: {n_coins} coins, {n_total} total bars[/bold cyan]"
         )
         return X_combined, y_combined, dates_combined
+
+    def _save_fold_plot(
+        self, cfg: RunConfig, df: pd.DataFrame, mode: str, fold_id: int,
+        best: PredictionResult, X_te: pd.DataFrame, d_te: pd.Series,
+        test_predictions: np.ndarray,
+    ) -> None:
+        """Save the 3 prediction plots for one CV fold's best predictor.
+
+        Plot files are suffixed with mode + fold to disambiguate across runs.
+        """
+        # Build a label series spanning the full df:
+        #   - bars in the test window: predictor's predictions
+        #   - other bars: empty string (denoiser will skip them)
+        out = pd.Series("", index=df.index, dtype=object)
+        if len(test_predictions) == len(X_te):
+            out.loc[X_te.index] = test_predictions
+
+        # We want a fold-specific filename — temporarily swap PLOT paths then restore
+        from ..visualization.regime_plots import (
+            denoise_labels, _compute_runs, _plot_A, _plot_B, _plot_C,
+        )
+        smooth = denoise_labels(out, window=24)
+        runs = _compute_runs(df, smooth)
+        suffix = f"pred-{best.name}-{cfg.target}-{cfg.timeframe}-{mode}-fold{fold_id+1}"
+        out_dir = PLOTS_DIR
+        split_dt = d_te.iloc[0]
+        try:
+            _plot_A(df, runs, out_dir / f"A_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
+            _plot_B(df, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
+            _plot_C(df, smooth, runs, out_dir / f"C_pred_{mode}_fold{fold_id+1}.png", suffix, split_dt)
+            console.print(
+                f"      [dim]plots saved: A/B/C_pred_{mode}_fold{fold_id+1}.png "
+                f"(predictor={best.name}, κ={best.kappa:+.3f})[/dim]"
+            )
+        except Exception as e:
+            console.print(f"      [yellow]plot save failed: {e}[/yellow]")
 
     def _print_and_save_importance(self, predictor: BasePredictor, X_te, y_te) -> None:
         try:
