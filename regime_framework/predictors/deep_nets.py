@@ -1,4 +1,9 @@
-"""Deep neural net predictors: DeepMLP, GRU, LSTM (PyTorch)."""
+"""Deep neural net predictors: GRU, LSTM (PyTorch).
+
+The MLP variant (formerly DeepMLPPredictor) has been moved to classical.py
+as MLPPredictor since it operates on flat feature vectors like the other
+classical predictors.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -14,81 +19,6 @@ from ..config import LABEL_ORDER
 
 def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-class _DeepMLP(nn.Module):
-    def __init__(self, in_dim: int, n_classes: int, hidden: tuple[int, ...] = (256, 128, 64), dropout: float = 0.2):
-        super().__init__()
-        layers: list[nn.Module] = []
-        prev = in_dim
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.BatchNorm1d(h), nn.GELU(), nn.Dropout(dropout)]
-            prev = h
-        layers.append(nn.Linear(prev, n_classes))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class DeepMLPPredictor(BasePredictor):
-    name = "DeepMLP"
-    family = "deep"
-
-    def __init__(self, hidden=(256, 128, 64), dropout=0.2, epochs=40, batch_size=512, lr=1e-3) -> None:
-        self.hidden = hidden
-        self.dropout = dropout
-        self.epochs = int(epochs)
-        self.batch_size = int(batch_size)
-        self.lr = float(lr)
-        self.scaler: StandardScaler | None = None
-        self.model: _DeepMLP | None = None
-
-    def fit(self, X_train, y_train, dates_train, df_train):
-        device = _device()
-        self.scaler = StandardScaler()
-        Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
-        cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
-        y = np.array([cls_to_idx[v] for v in y_train.values], dtype=np.int64)
-
-        cls_counts = np.array([(y == i).sum() for i in range(len(LABEL_ORDER))], dtype=np.float32)
-        w = (1.0 / np.maximum(cls_counts, 1))
-        w = w * (len(LABEL_ORDER) / w.sum())
-        weight = torch.from_numpy(w).float().to(device)
-
-        loader = DataLoader(
-            TensorDataset(torch.from_numpy(Xs), torch.from_numpy(y)),
-            batch_size=self.batch_size, shuffle=True,
-        )
-        self.model = _DeepMLP(Xs.shape[1], len(LABEL_ORDER), self.hidden, self.dropout).to(device)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-        criterion = nn.CrossEntropyLoss(weight=weight)
-
-        self.model.train()
-        for epoch in range(self.epochs):
-            tot = 0.0
-            n = 0
-            for xb, yb in loader:
-                xb = xb.to(device); yb = yb.to(device)
-                optimizer.zero_grad()
-                logits = self.model(xb)
-                loss = criterion(logits, yb)
-                loss.backward()
-                optimizer.step()
-                tot += float(loss.item()); n += 1
-            if (epoch + 1) % 10 == 0 or epoch == 0:
-                print(f"      DeepMLP epoch {epoch+1}/{self.epochs} loss={tot/max(n,1):.4f}")
-        return self
-
-    def predict(self, X_test, dates_test, df_test):
-        device = _device()
-        Xs = self.scaler.transform(X_test.values).astype(np.float32)
-        idx_to_cls = {i: c for i, c in enumerate(LABEL_ORDER)}
-        self.model.train(False)
-        with torch.no_grad():
-            logits = self.model(torch.from_numpy(Xs).to(device))
-            pred = torch.argmax(logits, dim=1).cpu().numpy()
-        return np.array([idx_to_cls[int(i)] for i in pred], dtype=object)
 
 
 class _SeqRNN(nn.Module):

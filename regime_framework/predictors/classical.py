@@ -1,14 +1,21 @@
-"""Classical sklearn / xgboost predictors."""
+"""Classical predictors: LogReg, RandomForest, GBM, MLP (torch GPU), XGBoost."""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
 
 from .base import BasePredictor
+from ..config import LABEL_ORDER
+
+
+def _device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class _SklearnBase(BasePredictor):
@@ -77,18 +84,82 @@ class GBMPredictor(_SklearnBase):
         )
 
 
-class MLPPredictor(_SklearnBase):
-    name = "MLP"
-    needs_scaling = True
-
-    def __init__(self) -> None:
+class _MLPNet(nn.Module):
+    def __init__(self, in_dim: int, n_classes: int, hidden: tuple[int, ...] = (256, 128, 64), dropout: float = 0.2):
         super().__init__()
-        self.clf = MLPClassifier(
-            hidden_layer_sizes=(128, 64, 32),
-            max_iter=400,
-            random_state=42,
-            early_stopping=False,
+        layers: list[nn.Module] = []
+        prev = in_dim
+        for h in hidden:
+            layers += [nn.Linear(prev, h), nn.BatchNorm1d(h), nn.GELU(), nn.Dropout(dropout)]
+            prev = h
+        layers.append(nn.Linear(prev, n_classes))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class MLPPredictor(BasePredictor):
+    """PyTorch GPU MLP. Hidden 256-128-64, BN+GELU+Dropout, class-weighted CE,
+    Adam, 40 epochs. ~84k params for ~160 features.
+    """
+    name = "MLP"
+    family = "classical"
+
+    def __init__(self, hidden=(256, 128, 64), dropout=0.2, epochs=40, batch_size=512, lr=1e-3) -> None:
+        self.hidden = hidden
+        self.dropout = dropout
+        self.epochs = int(epochs)
+        self.batch_size = int(batch_size)
+        self.lr = float(lr)
+        self.scaler: StandardScaler | None = None
+        self.model: _MLPNet | None = None
+
+    def fit(self, X_train, y_train, dates_train, df_train):
+        device = _device()
+        self.scaler = StandardScaler()
+        Xs = self.scaler.fit_transform(X_train.values).astype(np.float32)
+        cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
+        y = np.array([cls_to_idx[v] for v in y_train.values], dtype=np.int64)
+
+        cls_counts = np.array([(y == i).sum() for i in range(len(LABEL_ORDER))], dtype=np.float32)
+        w = (1.0 / np.maximum(cls_counts, 1))
+        w = w * (len(LABEL_ORDER) / w.sum())
+        weight = torch.from_numpy(w).float().to(device)
+
+        loader = DataLoader(
+            TensorDataset(torch.from_numpy(Xs), torch.from_numpy(y)),
+            batch_size=self.batch_size, shuffle=True,
         )
+        self.model = _MLPNet(Xs.shape[1], len(LABEL_ORDER), self.hidden, self.dropout).to(device)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        criterion = nn.CrossEntropyLoss(weight=weight)
+
+        self.model.train()
+        for epoch in range(self.epochs):
+            tot = 0.0
+            n = 0
+            for xb, yb in loader:
+                xb = xb.to(device); yb = yb.to(device)
+                optimizer.zero_grad()
+                logits = self.model(xb)
+                loss = criterion(logits, yb)
+                loss.backward()
+                optimizer.step()
+                tot += float(loss.item()); n += 1
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                print(f"      MLP epoch {epoch+1}/{self.epochs} loss={tot/max(n,1):.4f}")
+        return self
+
+    def predict(self, X_test, dates_test, df_test):
+        device = _device()
+        Xs = self.scaler.transform(X_test.values).astype(np.float32)
+        idx_to_cls = {i: c for i, c in enumerate(LABEL_ORDER)}
+        self.model.train(False)
+        with torch.no_grad():
+            logits = self.model(torch.from_numpy(Xs).to(device))
+            pred = torch.argmax(logits, dim=1).cpu().numpy()
+        return np.array([idx_to_cls[int(i)] for i in pred], dtype=object)
 
 
 class XGBoostPredictor(BasePredictor):

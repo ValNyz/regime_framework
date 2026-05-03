@@ -26,7 +26,7 @@ from ..predictors.classical import (
     LogRegPredictor, RandomForestPredictor, MLPPredictor, XGBoostPredictor,
 )
 from ..predictors.rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
-from ..predictors.deep_nets import DeepMLPPredictor, GRUPredictor, LSTMPredictor
+from ..predictors.deep_nets import GRUPredictor, LSTMPredictor
 from ..predictors.transformer import TimeSeriesTransformerPredictor
 from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
@@ -47,13 +47,13 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         out += [
             LogRegPredictor(),
             RandomForestPredictor(),
-            MLPPredictor(),
+            MLPPredictor(),    # torch GPU, BN+GELU+Dropout, ~84k params
             XGBoostPredictor(),
         ]
     if "rule_based" in families:
         out += [RegimeV3Predictor(), RegimeV4EmaPredictor()]
     if "deep_nets" in families:
-        out += [DeepMLPPredictor(), GRUPredictor(), LSTMPredictor()]
+        out += [GRUPredictor(), LSTMPredictor()]
     if "transformer" in families:
         out += [TimeSeriesTransformerPredictor()]
     if "pretrained" in families:
