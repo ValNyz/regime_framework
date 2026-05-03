@@ -160,7 +160,8 @@ class RLConfig:
     override the shared ones via its dedicated sub-block (nn / linear / lgb).
     """
     # Shared across approximators
-    total_timesteps: int = 100000      # RL training budget per fold
+    total_timesteps: int = 100000      # RL training budget per fold (default for all
+                                       # approximators; override per-approximator below)
     transaction_cost: float = 0.0      # 0 = no penalty. Example: 0.001 = 10 bps per flip.
     flat_threshold: float = 0.05       # continuous action → flat if |action| < this
     ft_steps_scale: float = 0.5        # FT mode: total_timesteps × this
@@ -168,31 +169,39 @@ class RLConfig:
     action_spaces: list[str] = field(default_factory=lambda: [
         "discrete-2", "discrete-3", "continuous"
     ])
-    # Approximator-specific (not all keys apply to every approximator)
+    # Approximator-specific (not all keys apply to every approximator).
+    # Each approximator may override total_timesteps (None = inherit the shared
+    # value above). Useful when an expensive approximator needs less budget.
+    nn_total_timesteps: int | None = None
     nn_learning_rate: float = 5e-4
     nn_buffer_size: int = 50000
     nn_gamma: float = 0.99
     nn_net_arch: list[int] = field(default_factory=lambda: [64, 32])
     nn_verbose: int = 0
+    linear_total_timesteps: int | None = None
     linear_learning_rate: float = 1e-3
     linear_gamma: float = 0.99
     linear_epsilon_start: float = 1.0
     linear_epsilon_end: float = 0.05
+    lgb_total_timesteps: int | None = None
     lgb_n_estimators: int = 200
     lgb_max_depth: int = 6
     lgb_learning_rate: float = 0.05
     lgb_gamma: float = 0.99
     lgb_iterations: int = 20
+    xgb_total_timesteps: int | None = None
     xgb_n_estimators: int = 200
     xgb_max_depth: int = 6
     xgb_learning_rate: float = 0.05
     xgb_gamma: float = 0.99
     xgb_iterations: int = 20
+    rf_total_timesteps: int | None = None
     rf_n_estimators: int = 200
     rf_max_depth: int | None = None      # None = unlimited (sklearn default)
     rf_min_samples_leaf: int = 1
     rf_gamma: float = 0.99
     rf_iterations: int = 20
+    ridge_total_timesteps: int | None = None
     ridge_alpha: float = 1.0             # L2 regularization strength
     ridge_gamma: float = 0.99
     ridge_iterations: int = 20

@@ -112,36 +112,41 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             RidgeQ2Predictor, RidgeQ3Predictor,
         )
         rl_cfg = cfg.predictors.rl
+        # Shared kwargs (every approximator gets these). total_timesteps is
+        # per-approximator below since some approximators (RF) want a smaller
+        # budget than the shared default.
         rl_shared = dict(
             transaction_cost=rl_cfg.transaction_cost,
             flat_threshold=rl_cfg.flat_threshold,
-            total_timesteps=rl_cfg.total_timesteps,
             ft_steps_scale=rl_cfg.ft_steps_scale,
-            seed=cfg.seed,  # use the global seed (top-level seed: in YAML)
+            seed=cfg.seed,
         )
+        def _ts(override: int | None) -> int:
+            """Per-approximator total_timesteps with shared fallback."""
+            return int(override) if override is not None else int(rl_cfg.total_timesteps)
         # Per-approximator hyperparam blocks — built once, reused across action spaces
-        nn_kw = dict(rl_shared,
+        nn_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.nn_total_timesteps),
             learning_rate=rl_cfg.nn_learning_rate,
             buffer_size=rl_cfg.nn_buffer_size,
             gamma=rl_cfg.nn_gamma, net_arch=tuple(rl_cfg.nn_net_arch),
             verbose=rl_cfg.nn_verbose)
-        linear_kw = dict(rl_shared,
+        linear_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.linear_total_timesteps),
             learning_rate=rl_cfg.linear_learning_rate, gamma=rl_cfg.linear_gamma,
             epsilon_start=rl_cfg.linear_epsilon_start,
             epsilon_end=rl_cfg.linear_epsilon_end)
-        lgb_kw = dict(rl_shared,
+        lgb_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.lgb_total_timesteps),
             n_estimators=rl_cfg.lgb_n_estimators, max_depth=rl_cfg.lgb_max_depth,
             learning_rate=rl_cfg.lgb_learning_rate, gamma=rl_cfg.lgb_gamma,
             iterations=rl_cfg.lgb_iterations)
-        xgb_kw = dict(rl_shared,
+        xgb_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.xgb_total_timesteps),
             n_estimators=rl_cfg.xgb_n_estimators, max_depth=rl_cfg.xgb_max_depth,
             learning_rate=rl_cfg.xgb_learning_rate, gamma=rl_cfg.xgb_gamma,
             iterations=rl_cfg.xgb_iterations)
-        rf_kw = dict(rl_shared,
+        rf_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.rf_total_timesteps),
             n_estimators=rl_cfg.rf_n_estimators, max_depth=rl_cfg.rf_max_depth,
             min_samples_leaf=rl_cfg.rf_min_samples_leaf, gamma=rl_cfg.rf_gamma,
             iterations=rl_cfg.rf_iterations)
-        ridge_kw = dict(rl_shared,
+        ridge_kw = dict(rl_shared, total_timesteps=_ts(rl_cfg.ridge_total_timesteps),
             alpha=rl_cfg.ridge_alpha, gamma=rl_cfg.ridge_gamma,
             iterations=rl_cfg.ridge_iterations)
         # Map action_space → list of (cls, kwargs)
