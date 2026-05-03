@@ -45,23 +45,41 @@ def compute_lift_table(
 
     rows = []
     for col in X.columns:
-        v = X[col].values
-        # Binarize: if already 0/1, threshold is identity; else cast > threshold
-        if np.issubdtype(v.dtype, np.integer) and set(np.unique(v)).issubset({0, 1}):
-            trig = v.astype(bool)
+        try:
+            v = np.asarray(X[col].values, dtype=float)  # coerce to float; NaN preserved
+        except (TypeError, ValueError):
+            # Non-numeric column — skip
+            continue
+
+        if not np.isfinite(v).any():
+            continue
+
+        # Binarize. Fast-path for already 0/1 columns:
+        finite = np.isfinite(v)
+        unique_finite = np.unique(v[finite])
+        is_binary_already = (
+            len(unique_finite) <= 2
+            and float(unique_finite.min()) >= 0.0
+            and float(unique_finite.max()) <= 1.0
+        )
+        if is_binary_already:
+            trig = (v >= 0.5) & finite
         else:
-            trig = v > binary_threshold
+            trig = (v > binary_threshold) & finite
 
         n_trig = int(trig.sum())
         if n_trig < min_triggers:
             continue
 
-        p_bull_cond = float((y_arr[trig] == "bull").sum()) / max(n_trig, 1)
-        p_bear_cond = float((y_arr[trig] == "bear").sum()) / max(n_trig, 1)
+        try:
+            p_bull_cond = float((y_arr[trig] == "bull").sum()) / max(n_trig, 1)
+            p_bear_cond = float((y_arr[trig] == "bear").sum()) / max(n_trig, 1)
+        except Exception:
+            continue
+
         lift_bull = p_bull_cond / max(p_bull, 1e-12)
         lift_bear = p_bear_cond / max(p_bear, 1e-12)
         max_abs = max(abs(lift_bull - 1), abs(lift_bear - 1))
-        # Direction of deviation: positive = bull-favouring, negative = bear-favouring
         deviation = (lift_bull - lift_bear) / 2
 
         rows.append({

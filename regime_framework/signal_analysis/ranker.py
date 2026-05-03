@@ -7,6 +7,16 @@ from .lift import compute_lift_table
 from .mutual_info import compute_mutual_info_table
 
 
+_LIFT_COLS = [
+    "signal", "n_triggers", "p_bull_base", "p_bull_cond", "lift_bull",
+    "p_bear_base", "p_bear_cond", "lift_bear", "max_abs_lift", "deviation",
+]
+
+
+def __empty_lift() -> pd.DataFrame:
+    return pd.DataFrame(columns=_LIFT_COLS)
+
+
 def rank_signals(
     X: pd.DataFrame,
     y: pd.Series,
@@ -18,8 +28,16 @@ def rank_signals(
     Returns one row per feature with all metrics merged. Sorted by combined
     score = z-score(max_abs_lift) + z-score(mi).
     """
-    lift = compute_lift_table(X, y, binary_threshold=binary_threshold, min_triggers=min_triggers)
-    mi = compute_mutual_info_table(X, y, discrete_features=False)
+    try:
+        lift = compute_lift_table(X, y, binary_threshold=binary_threshold, min_triggers=min_triggers)
+    except Exception as e:
+        print(f"  WARN: lift table failed ({e}); empty lift.")
+        lift = __empty_lift()
+    try:
+        mi = compute_mutual_info_table(X, y, discrete_features=False)
+    except Exception as e:
+        print(f"  WARN: MI table failed ({e}); zeros.")
+        mi = pd.DataFrame({"signal": list(X.columns), "mi": [0.0] * X.shape[1]})
 
     if lift.empty:
         # all features continuous — fall back to MI only
