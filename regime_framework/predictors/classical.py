@@ -5,7 +5,11 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+)
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
@@ -81,6 +85,24 @@ class GBMPredictor(_SklearnBase):
         super().__init__()
         self.clf = GradientBoostingClassifier(
             n_estimators=200, max_depth=5, random_state=42
+        )
+
+
+class ExtraTreesPredictor(_SklearnBase):
+    """Extremely Randomized Trees: random thresholds reduce variance on noisy
+    financial features. Typically ~1.5x faster than RandomForest on the same
+    n_estimators, with comparable or slightly better OOS kappa.
+    """
+    name = "ExtraTrees"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clf = ExtraTreesClassifier(
+            n_estimators=400,
+            max_depth=None,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1,
         )
 
 
@@ -189,6 +211,51 @@ class XGBoostPredictor(BasePredictor):
             n_jobs=-1,
             tree_method="hist",
             verbosity=0,
+        )
+        self.cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
+        self.idx_to_cls = {i: c for c, i in self.cls_to_idx.items()}
+
+    def fit(self, X_train, y_train, dates_train, df_train):
+        y_int = np.array([self.cls_to_idx[v] for v in y_train.values], dtype=np.int64)
+        self.clf.fit(X_train.values, y_int)
+        return self
+
+    def predict(self, X_test, dates_test, df_test):
+        pred_int = self.clf.predict(X_test.values)
+        return np.array([self.idx_to_cls[int(i)] for i in pred_int], dtype=object)
+
+    def feature_importances(self, X_test, y_test, n_repeats=3, random_state=42):
+        if hasattr(self.clf, "feature_importances_"):
+            imp = np.asarray(self.clf.feature_importances_, dtype=float)
+            return pd.Series(imp, index=X_test.columns, name="importance").sort_values(ascending=False)
+        return super().feature_importances(X_test, y_test, n_repeats, random_state)
+
+
+class LightGBMPredictor(BasePredictor):
+    """LightGBM multiclass GBDT. Leaf-wise growth -> typically 2-3x faster
+    than XGBoost on wide tabular feature sets, often matching or beating its
+    accuracy. Uses int label encoding like the XGBoost wrapper.
+    """
+    name = "LightGBM"
+    family = "classical"
+
+    def __init__(self) -> None:
+        from lightgbm import LGBMClassifier
+        from ..config import LABEL_ORDER
+        self.clf = LGBMClassifier(
+            n_estimators=600,
+            num_leaves=63,
+            max_depth=-1,
+            learning_rate=0.05,
+            subsample=0.85,
+            subsample_freq=1,
+            colsample_bytree=0.85,
+            reg_lambda=1.0,
+            random_state=42,
+            n_jobs=-1,
+            objective="multiclass",
+            num_class=len(LABEL_ORDER),
+            verbosity=-1,
         )
         self.cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
         self.idx_to_cls = {i: c for c, i in self.cls_to_idx.items()}

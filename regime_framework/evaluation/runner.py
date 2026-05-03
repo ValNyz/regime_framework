@@ -23,7 +23,8 @@ from ..labels import get_labeller
 from ..features.pipeline import FeaturePipeline
 from ..predictors.base import BasePredictor, PredictionResult
 from ..predictors.classical import (
-    LogRegPredictor, RandomForestPredictor, MLPPredictor, XGBoostPredictor,
+    LogRegPredictor, RandomForestPredictor, ExtraTreesPredictor,
+    MLPPredictor, XGBoostPredictor, LightGBMPredictor,
 )
 from ..predictors.rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
 from ..predictors.deep_nets import GRUPredictor, LSTMPredictor
@@ -47,8 +48,10 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         out += [
             LogRegPredictor(),
             RandomForestPredictor(),
-            MLPPredictor(),    # torch GPU, BN+GELU+Dropout, ~84k params
+            ExtraTreesPredictor(),  # randomized splits, RF cousin
+            MLPPredictor(),         # torch GPU, BN+GELU+Dropout, ~84k params
             XGBoostPredictor(),
+            LightGBMPredictor(),    # leaf-wise GBDT, ~2-3x faster than XGB
         ]
     if "rule_based" in families:
         out += [RegimeV3Predictor(), RegimeV4EmaPredictor()]
