@@ -161,6 +161,21 @@ class PredictorConfig:
     # any run that has at least one probabilistic base family enabled
     # (classical / deep_nets / transformer). Independent of `families` list.
     include_ensemble: bool = True
+    # Subset ensembles. Each entry produces Ensemble-{name} (cold) + (if
+    # include_finetune) Ensemble-{name}-FT, voting only over the named bases.
+    # Example:
+    #   ensemble_groups:
+    #     - name: trees
+    #       bases: [RandomForest, ExtraTrees]
+    #     - name: lr_trees
+    #       bases: [LogReg, RandomForest, ExtraTrees]
+    # `bases` matches the cold-variant base_name; FT versions are auto-paired.
+    ensemble_groups: list[dict] = field(default_factory=list)
+    # Final-name match-list of predictors to exclude from the run. Uses the
+    # display name including any -FT / -name_suffix. Example:
+    #   disabled: [MLP-FT, Ensemble-trees-FT]
+    # Skips those predictors entirely; same family / FT defaults otherwise.
+    disabled: list[str] = field(default_factory=list)
 
 
 @dataclass

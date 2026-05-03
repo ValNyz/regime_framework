@@ -106,6 +106,39 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         _add(EnsemblePredictor)
         _add(ConfidenceEnsemblePredictor)
 
+        # Subset ensembles — one per entry in cfg.predictors.ensemble_groups.
+        # Each produces Ensemble-{name} and (if FT enabled) Ensemble-{name}-FT,
+        # voting only over the named bases. No confidence-variant for groups
+        # by default (keeps the table size manageable).
+        for group in cfg.predictors.ensemble_groups:
+            gname = str(group.get("name", "")).strip()
+            gbases = list(group.get("bases", []))
+            if not gname or not gbases:
+                console.print(f"[yellow]WARN: ignoring malformed ensemble_group: {group}[/yellow]")
+                continue
+            out.append(EnsemblePredictor(bases_filter=gbases, name_suffix=f"-{gname}"))
+            if add_ft:
+                out.append(EnsemblePredictor(
+                    finetune=True, bases_filter=gbases, name_suffix=f"-{gname}",
+                ))
+
+    # Disabled list — match the final display name (post -FT and post-suffix).
+    disabled = set(cfg.predictors.disabled or [])
+    if disabled:
+        before_names = {p.name for p in out}
+        out = [p for p in out if p.name not in disabled]
+        actually_disabled = sorted(disabled & before_names)
+        not_found = sorted(disabled - before_names)
+        if actually_disabled:
+            console.print(
+                f"[yellow]Disabled {len(actually_disabled)} predictors: "
+                f"{actually_disabled}[/yellow]"
+            )
+        if not_found:
+            console.print(
+                f"[yellow]WARN: disabled names not in build (typos?): {not_found}[/yellow]"
+            )
+
     return out
 
 

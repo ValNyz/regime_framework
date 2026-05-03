@@ -30,10 +30,24 @@ class EnsemblePredictor(BasePredictor):
     supports_finetune = True
     is_ensemble = True   # marker — runner processes ensembles after base predictors
 
-    def __init__(self, finetune: bool = False) -> None:
+    def __init__(
+        self,
+        finetune: bool = False,
+        bases_filter: list[str] | None = None,
+        name_suffix: str = "",
+    ) -> None:
+        """
+        bases_filter: when provided, the ensemble only averages over base
+            predictors whose cold name (stripped of -FT suffix) matches one of
+            these. Used to build subset ensembles (e.g. trees-only, linear-only).
+            None = use all bases of the appropriate variant.
+        name_suffix: inserted between base_name and the optional -FT, so a
+            tree-only ensemble shows up as 'Ensemble-trees' / 'Ensemble-trees-FT'.
+        """
         self.finetune = bool(finetune)
         self.is_finetune = self.finetune
-        self.name = self.base_name + ("-FT" if self.finetune else "")
+        self.name = self.base_name + name_suffix + ("-FT" if self.finetune else "")
+        self._bases_filter = list(bases_filter) if bases_filter is not None else None
         # State held across folds (FT only): predictor_name -> kappa from last fold
         self._prior_kappas: dict[str, float] = {}
         # State held within a fold: predictor_name -> proba (n_test, n_classes)
@@ -56,10 +70,18 @@ class EnsemblePredictor(BasePredictor):
         def _is_ft(name: str) -> bool:
             return name.endswith("-FT")
 
+        def _strip_ft(name: str) -> str:
+            return name[:-3] if _is_ft(name) else name
+
         if self.finetune:
             filtered = {k: v for k, v in base_probas.items() if _is_ft(k)}
         else:
             filtered = {k: v for k, v in base_probas.items() if not _is_ft(k)}
+
+        # Subset filter: keep only bases whose cold name is in self._bases_filter.
+        if self._bases_filter is not None:
+            allow = set(self._bases_filter)
+            filtered = {k: v for k, v in filtered.items() if _strip_ft(k) in allow}
 
         self._fold_base_probas = {
             k: v for k, v in filtered.items()
