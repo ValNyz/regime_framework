@@ -207,4 +207,12 @@ def load_external_features(
         except Exception as e:
             print(f"  WARN: VIX skipped: {e}")
 
+    # External features have heterogeneous start dates (ETF flows from 2024,
+    # DXY/VIX/FNG/funding from 2018-2019). Fill NaN with 0 so a row isn't
+    # dropped just because one source's history is shorter than another's.
+    # Semantically: 0 = "neutral / no info" (correct for z-scores, returns,
+    # ratios; for absolute levels like vix_close it's effectively a missing-data
+    # sentinel that the classifier learns to ignore).
+    feat = feat.fillna(0.0)
+
     return feat
