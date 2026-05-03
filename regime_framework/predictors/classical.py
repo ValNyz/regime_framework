@@ -106,7 +106,7 @@ class MLPPredictor(BasePredictor):
     name = "MLP"
     family = "classical"
 
-    def __init__(self, hidden=(256, 128, 64), dropout=0.2, epochs=40, batch_size=512, lr=1e-3) -> None:
+    def __init__(self, hidden=(256, 128, 64), dropout=0.2, epochs=40, batch_size=4096, lr=1e-3) -> None:
         self.hidden = hidden
         self.dropout = dropout
         self.epochs = int(epochs)

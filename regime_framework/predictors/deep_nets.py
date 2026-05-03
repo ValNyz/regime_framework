@@ -50,7 +50,7 @@ def _make_sequences(X: np.ndarray, y: np.ndarray, seq_len: int):
 class _SeqPredictor(BasePredictor):
     family = "deep"
     kind: str = "lstm"
-    def __init__(self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=256, lr=1e-3, dropout=0.2):
+    def __init__(self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=1024, lr=1e-3, dropout=0.2):
         self.seq_len = int(seq_len)
         self.hidden = int(hidden)
         self.n_layers = int(n_layers)

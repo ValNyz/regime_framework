@@ -108,7 +108,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         ff_hidden: int = 1024,
         dropout: float = 0.1,
         epochs: int = 30,
-        batch_size: int = 256,
+        batch_size: int = 512,
         lr: float = 3e-4,
         weight_decay: float = 1e-5,
     ) -> None:
