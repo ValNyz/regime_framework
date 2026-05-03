@@ -102,6 +102,10 @@ class BenchmarkRunner:
             cfg.label.method,
             L_range=cfg.label.L_range,
             t_threshold=cfg.label.t_threshold,
+            hysteresis_bars=cfg.label.hysteresis_bars,
+            strong_threshold=cfg.label.strong_threshold,
+            horizon=cfg.label.horizon,
+            alpha=cfg.label.alpha,
         )
         console.print(f"[bold]Labelling[/bold] ({labeller.name})")
         labels = labeller.compute(df)
@@ -576,6 +580,10 @@ class BenchmarkRunner:
             cfg.label.method,
             L_range=cfg.label.L_range,
             t_threshold=cfg.label.t_threshold,
+            hysteresis_bars=cfg.label.hysteresis_bars,
+            strong_threshold=cfg.label.strong_threshold,
+            horizon=cfg.label.horizon,
+            alpha=cfg.label.alpha,
         )
         labels = labeller.compute(df)
         pipeline = FeaturePipeline(
@@ -685,7 +693,7 @@ class BenchmarkRunner:
         from ..visualization.regime_plots import (
             denoise_labels, _compute_runs, _plot_A, _plot_B, _plot_C,
         )
-        smooth = denoise_labels(out, window=24)
+        smooth = denoise_labels(out, window=168)   # 7 days at 1h TF
         runs = _compute_runs(df, smooth)
         suffix = f"pred-{best.name}-{cfg.target}-{cfg.timeframe}-{mode}-fold{fold_id+1}"
         out_dir = PLOTS_DIR

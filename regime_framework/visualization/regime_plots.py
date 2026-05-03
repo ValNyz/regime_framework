@@ -20,7 +20,7 @@ import pandas as pd
 from ..config import LABEL_COLORS, LABEL_ORDER, RunConfig
 
 
-def denoise_labels(labels: pd.Series, window: int = 24) -> pd.Series:
+def denoise_labels(labels: pd.Series, window: int = 168) -> pd.Series:
     """Smooth a regime label series by rolling mode (most frequent in window)."""
     s = labels.copy()
     s[s == ""] = np.nan
@@ -164,7 +164,7 @@ def _plot_C(df, smooth, runs, out_path, title_suffix: str, split_dt=None) -> Non
 
 
 def save_label_plots(df: pd.DataFrame, labels: pd.Series, out_dir: Path, cfg: RunConfig) -> None:
-    smooth = denoise_labels(labels, window=24)
+    smooth = denoise_labels(labels, window=168)
     runs = _compute_runs(df, smooth)
     suffix = f"labels-{cfg.target}-{cfg.timeframe}"
     _plot_A(df, runs, out_dir / "A_labels_background.png", suffix)
@@ -176,7 +176,7 @@ def save_prediction_plots(
     df: pd.DataFrame, predictions: pd.Series, out_dir: Path, cfg: RunConfig,
     predictor_name: str, split_dt=None,
 ) -> None:
-    smooth = denoise_labels(predictions, window=24)
+    smooth = denoise_labels(predictions, window=168)
     runs = _compute_runs(df, smooth)
     suffix = f"pred-{predictor_name}-{cfg.target}-{cfg.timeframe}"
     _plot_A(df, runs, out_dir / "A_predictions_background.png", suffix, split_dt)

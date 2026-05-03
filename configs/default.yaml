@@ -22,6 +22,11 @@ label:
   method: trend_scan        # trend_scan | triple_barrier | drawdown
   L_range: [72, 120, 168, 240, 336, 480, 720, 1080]
   t_threshold: 0.0
+  # Temporal hysteresis: 0 = no hysteresis (raw bar-by-bar trend-scan, noisy).
+  # >0 = require N consecutive bars of strong opposite t-stat to switch regime.
+  # 168 (7 days at 1h) eliminates intra-trend pullback flips on BTC.
+  hysteresis_bars: 168
+  strong_threshold: 2.0
   horizon: 48               # used by triple_barrier only
   alpha: 1.5                # used by triple_barrier only
 

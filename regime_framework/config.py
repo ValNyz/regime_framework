@@ -82,6 +82,9 @@ class LabelConfig:
     method: str = "trend_scan"           # "trend_scan" | "triple_barrier" | "drawdown"
     L_range: list[int] = field(default_factory=lambda: [72, 120, 168, 240, 336, 480, 720, 1080])
     t_threshold: float = 0.0             # 0 = pure sign (binary bull/bear)
+    # trend_scan hysteresis (0 = disabled)
+    hysteresis_bars: int = 0
+    strong_threshold: float = 2.0
     # triple_barrier extras (unused for trend_scan)
     horizon: int = 48
     alpha: float = 1.5

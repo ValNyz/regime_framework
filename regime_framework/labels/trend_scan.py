@@ -5,7 +5,15 @@ regression close ~ alpha + beta·time on log(close)[t : t+L]. Find L* that
 maximises |t-stat(beta)|. Label = sign(beta at L*) when |t| > t_threshold,
 else "range" (which is rare with t_threshold=0).
 
-Closed-form vectorised: rolling-sum operations, no nested loops over windows.
+OPTIONAL: temporal hysteresis. Without it, every bar's label is independent
+and the result is noisy (a single counter-trend pullback inside a macro bull
+flips the label to bear for that bar). With hysteresis, once a label is set
+to bull, the next bars stay bull until the t-stat is strongly negative
+(|t| > strong_threshold) for `hysteresis_bars` consecutive bars. Symmetric
+for bear. Result: macro-trend regimes with realistic durations (weeks-months
+on BTC 1h), at the cost of slower transition detection.
+
+Closed-form vectorised regression; hysteresis is a single pass O(n).
 """
 from __future__ import annotations
 
@@ -18,9 +26,17 @@ from .base import BaseLabeller
 class TrendScanLabeller(BaseLabeller):
     name = "trend_scan"
 
-    def __init__(self, L_range: list[int] | None = None, t_threshold: float = 0.0) -> None:
+    def __init__(
+        self,
+        L_range: list[int] | None = None,
+        t_threshold: float = 0.0,
+        hysteresis_bars: int = 0,
+        strong_threshold: float = 2.0,
+    ) -> None:
         self.L_range = L_range or [72, 120, 168, 240, 336, 480, 720, 1080]
         self.t_threshold = float(t_threshold)
+        self.hysteresis_bars = int(hysteresis_bars)
+        self.strong_threshold = float(strong_threshold)
 
     def compute(self, df: pd.DataFrame) -> pd.Series:
         close = df["close"].to_numpy(dtype=float)
@@ -70,4 +86,52 @@ class TrendScanLabeller(BaseLabeller):
             else:
                 labels[t] = "range"
 
+        # Apply hysteresis if requested
+        if self.hysteresis_bars > 0:
+            labels = self._apply_hysteresis(labels, best_tstat)
+
         return pd.Series(labels, index=df.index, name="label")
+
+    def _apply_hysteresis(self, labels: np.ndarray, tstat: np.ndarray) -> np.ndarray:
+        """Smooth label flips: stay in current regime until the OPPOSITE direction
+        is confirmed by |t| > strong_threshold for `hysteresis_bars` consecutive bars.
+        """
+        out = labels.copy()
+        cur = ""
+        contra_count = 0
+        for t in range(len(out)):
+            v = tstat[t]
+            raw = out[t]
+            if raw == "" or np.isnan(v):
+                # Skip unlabelled bars; keep current regime
+                if cur:
+                    out[t] = cur
+                contra_count = 0
+                continue
+
+            if cur == "":
+                cur = raw
+                contra_count = 0
+                continue
+
+            if raw == cur:
+                contra_count = 0
+                out[t] = cur
+                continue
+
+            # Opposite direction candidate — count consecutive STRONG opposite t-stats
+            is_strong = abs(v) > self.strong_threshold
+            opposite_consistent = (raw != cur) and is_strong
+            if opposite_consistent:
+                contra_count += 1
+                if contra_count >= self.hysteresis_bars:
+                    cur = raw
+                    contra_count = 0
+                    out[t] = cur
+                else:
+                    out[t] = cur  # stay in current regime
+            else:
+                # Weak opposite signal — reset counter, stay in current
+                contra_count = 0
+                out[t] = cur
+        return out

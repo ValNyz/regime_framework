@@ -5,13 +5,18 @@ from .drawdown import DrawdownLabeller
 
 
 def get_labeller(method: str, **kwargs) -> BaseLabeller:
+    """Each labeller has its own kwargs — filter to avoid 'unexpected keyword' errors."""
+    import inspect
     if method == "trend_scan":
-        return TrendScanLabeller(**kwargs)
-    if method == "triple_barrier":
-        return TripleBarrierLabeller(**kwargs)
-    if method == "drawdown":
-        return DrawdownLabeller(**kwargs)
-    raise ValueError(f"Unknown labelling method: {method}")
+        cls = TrendScanLabeller
+    elif method == "triple_barrier":
+        cls = TripleBarrierLabeller
+    elif method == "drawdown":
+        cls = DrawdownLabeller
+    else:
+        raise ValueError(f"Unknown labelling method: {method}")
+    accepted = set(inspect.signature(cls.__init__).parameters.keys()) - {"self"}
+    return cls(**{k: v for k, v in kwargs.items() if k in accepted})
 
 
 __all__ = [
