@@ -122,6 +122,7 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             transaction_cost=rl_cfg.transaction_cost,
             flat_threshold=rl_cfg.flat_threshold,
             ft_steps_scale=rl_cfg.ft_steps_scale,
+            proba_temperature=rl_cfg.proba_temperature,
             seed=cfg.seed,
         )
         def _ts(override: int | None) -> int:
@@ -215,18 +216,28 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         _add(ConfidenceEnsemblePredictor)
 
         # Subset ensembles — one per entry in cfg.predictors.ensemble_groups.
-        # Each produces Ensemble-{name} and (if FT enabled) Ensemble-{name}-FT,
-        # voting only over the named bases. No confidence-variant for groups
-        # by default (keeps the table size manageable).
+        # Each produces Ensemble-{name} (and -FT) voting only over the named
+        # bases. Optional `method` field selects "uniform" (default) or
+        # "confidence" — the latter creates a ConfidenceEnsemblePredictor
+        # that weights each base per-bar by its max(predict_proba). Useful
+        # to pair with RL bases that expose Q-margin via predict_proba.
         for group in cfg.predictors.ensemble_groups:
             gname = str(group.get("name", "")).strip()
             gbases = list(group.get("bases", []))
+            method = str(group.get("method", "uniform")).strip().lower()
             if not gname or not gbases:
                 console.print(f"[yellow]WARN: ignoring malformed ensemble_group: {group}[/yellow]")
                 continue
-            out.append(EnsemblePredictor(bases_filter=gbases, name_suffix=f"-{gname}"))
+            if method not in ("uniform", "confidence"):
+                console.print(
+                    f"[yellow]WARN: ensemble_group '{gname}' method='{method}' "
+                    f"unknown, defaulting to 'uniform' (valid: uniform, confidence)[/yellow]"
+                )
+                method = "uniform"
+            cls = ConfidenceEnsemblePredictor if method == "confidence" else EnsemblePredictor
+            out.append(cls(bases_filter=gbases, name_suffix=f"-{gname}"))
             if add_ft:
-                out.append(EnsemblePredictor(
+                out.append(cls(
                     finetune=True, bases_filter=gbases, name_suffix=f"-{gname}",
                 ))
 

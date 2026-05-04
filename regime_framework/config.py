@@ -165,6 +165,12 @@ class RLConfig:
     transaction_cost: float = 0.0      # 0 = no penalty. Example: 0.001 = 10 bps per flip.
     flat_threshold: float = 0.05       # continuous action → flat if |action| < this
     ft_steps_scale: float = 0.5        # FT mode: total_timesteps × this
+    # Temperature for predict_proba's softmax over per-action Q-values. None
+    # = auto-calibrate from std(Q) across the test slice (recommended). Set
+    # a positive float to force sharper (small T) or flatter (large T) proba.
+    # Affects ensembling: with raw Q-values softmax produces near one-hot
+    # proba which collapses ConfidenceEnsemble to plain Ensemble.
+    proba_temperature: float | None = None
     # Action-space variants to instantiate (omit any to skip those predictors)
     action_spaces: list[str] = field(default_factory=lambda: [
         "discrete-2", "discrete-3", "continuous"

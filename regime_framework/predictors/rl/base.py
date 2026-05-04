@@ -61,6 +61,7 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         flat_threshold: float = 0.05,
         total_timesteps: int = 100000,
         ft_steps_scale: float = 0.5,
+        proba_temperature: float | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()  # MultiCoinAware initializes _target_coin_data etc.
@@ -76,6 +77,10 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         self.flat_threshold = float(flat_threshold)
         self.total_timesteps = int(total_timesteps)
         self.ft_steps_scale = float(ft_steps_scale)
+        # None = auto-calibrate temperature from std(Q) at predict_proba time.
+        self.proba_temperature: float | None = (
+            None if proba_temperature is None else float(proba_temperature)
+        )
         self._extra_kwargs = kwargs  # passed through to subclass-specific configs
 
     # ------------------------------------------------------------------
@@ -180,13 +185,18 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         """Return per-bar (n, n_classes) proba aligned with LABEL_ORDER.
 
         For discrete action spaces with Q-values exposed by the subclass,
-        we softmax the Q-values per bar and map per-action proba to per-label
-        proba via action_to_position / position_to_label. The softmax
-        magnitude carries the Q-margin information that ConfidenceEnsemble
-        uses to weight votes — bars with one dominant action contribute
-        sharper proba (max ~ 1.0), bars with similar Q-values contribute
-        flatter proba (max ~ 1/n_classes). For continuous action spaces or
-        when Q-values aren't available, fall back to one-hot.
+        we softmax the Q-values per bar — temperature-scaled by the global
+        std of Q across the test slice. Without scaling, raw Q magnitudes
+        from FQI / Linear-Q produce near one-hot softmax (max(proba) ~ 1.0
+        on every bar), which collapses ConfidenceEnsemble's per-bar
+        weighting to uniform = mathematically identical to plain Ensemble
+        even when the bases vote opposite classes. Dividing by std(Q)
+        auto-calibrates the temperature so proba spread is meaningful:
+        confident bars stay sharp, ambiguous bars flatten toward
+        1/n_actions. ConfidenceEnsemble can then differentiate.
+
+        For continuous action spaces or when Q-values aren't available
+        (e.g. SAC, unfitted), fall back to one-hot at the predicted label.
         """
         # Reuse predict()'s output if it was just called (typical flow:
         # runner does p.predict() then p.predict_proba()). Otherwise re-run.
@@ -201,6 +211,21 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         proba = np.zeros((n, n_classes), dtype=np.float64)
         cls_to_idx = {c: i for i, c in enumerate(LABEL_ORDER)}
 
+        # Temperature: configured override if set, otherwise auto-calibrate
+        # from the pooled std of Q across all bars and actions in this slice.
+        # Falls back to 1.0 if no Q-values available or std is degenerate.
+        if self.proba_temperature is not None and self.proba_temperature > 0:
+            temperature = float(self.proba_temperature)
+        else:
+            valid_q = [np.asarray(q, dtype=np.float64) for q in q_per_bar if q is not None]
+            if valid_q:
+                q_pool = np.concatenate(valid_q)
+                temperature = float(np.std(q_pool))
+                if not np.isfinite(temperature) or temperature < 1e-9:
+                    temperature = 1.0
+            else:
+                temperature = 1.0
+
         for t in range(n):
             q = q_per_bar[t]
             if q is None or self.action_space_type == ACTION_CONTINUOUS:
@@ -209,8 +234,8 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
                 if lbl in cls_to_idx:
                     proba[t, cls_to_idx[lbl]] = 1.0
                 continue
-            # Softmax over Q-values → per-action proba; map to per-label.
-            q_arr = np.asarray(q, dtype=np.float64)
+            # Temperature-scaled softmax over Q-values → per-action proba.
+            q_arr = np.asarray(q, dtype=np.float64) / temperature
             q_arr = q_arr - q_arr.max()  # numerical stability
             exp_q = np.exp(q_arr)
             action_proba = exp_q / exp_q.sum()

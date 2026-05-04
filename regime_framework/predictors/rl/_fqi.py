@@ -153,6 +153,7 @@ class _FQIRLBase(RLBasePredictor):
             flat_threshold=flat_threshold,
             total_timesteps=total_timesteps,
             ft_steps_scale=ft_steps_scale,
+            **kwargs,  # forward any extra RLBase params (e.g. proba_temperature)
         )
         self.gamma = float(gamma)
         self.iterations = int(iterations)
