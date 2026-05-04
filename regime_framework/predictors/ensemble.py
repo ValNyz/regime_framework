@@ -35,6 +35,7 @@ class EnsemblePredictor(BasePredictor):
         finetune: bool = False,
         bases_filter: list[str] | None = None,
         name_suffix: str = "",
+        proba_normalize: bool = False,
     ) -> None:
         """
         bases_filter: when provided, the ensemble only averages over base
@@ -43,11 +44,18 @@ class EnsemblePredictor(BasePredictor):
             None = use all bases of the appropriate variant.
         name_suffix: inserted between base_name and the optional -FT, so a
             tree-only ensemble shows up as 'Ensemble-trees' / 'Ensemble-trees-FT'.
+        proba_normalize: when True, each base's proba is quantile-calibrated
+            to uniform[0.5, 1.0] in max(proba) before averaging. Equalizes
+            vote influence across heterogeneous bases (e.g. LogReg's near
+            one-hot vs RL's softer softmax). Without this, a base with
+            consistently sharper proba (margin ~0.98) drowns out bases with
+            softer proba (margin ~0.2) regardless of nominal weights.
         """
         self.finetune = bool(finetune)
         self.is_finetune = self.finetune
         self.name = self.base_name + name_suffix + ("-FT" if self.finetune else "")
         self._bases_filter = list(bases_filter) if bases_filter is not None else None
+        self.proba_normalize = bool(proba_normalize)
         # State held across folds (FT only): predictor_name -> kappa from last fold
         self._prior_kappas: dict[str, float] = {}
         # State held within a fold: predictor_name -> proba (n_test, n_classes)
@@ -123,12 +131,70 @@ class EnsemblePredictor(BasePredictor):
             return None
         names = list(self._fold_base_probas.keys())
         weights = self._compute_weights(names)
+        base_probas = self._maybe_normalize_probas(self._fold_base_probas)
         # Weighted sum: stack is (M, N, C); weights is (M,).
-        stack = np.stack([self._fold_base_probas[n] for n in names], axis=0)
+        stack = np.stack([base_probas[n] for n in names], axis=0)
         avg = np.tensordot(weights, stack, axes=1)  # (N, C)
         # Re-normalize for numerical safety (weighted softmax inputs).
         avg = avg / np.maximum(avg.sum(axis=1, keepdims=True), 1e-12)
         return avg.astype(np.float32)
+
+    # ------------------------------------------------------------------
+    # Per-base proba calibration (optional)
+    # ------------------------------------------------------------------
+    def _maybe_normalize_probas(
+        self, base_probas: dict[str, np.ndarray]
+    ) -> dict[str, np.ndarray]:
+        """Apply quantile normalization to each base's proba if enabled.
+        No-op when proba_normalize=False (cheap reference passthrough)."""
+        if not self.proba_normalize:
+            return base_probas
+        return {n: self._quantile_normalize_proba(p) for n, p in base_probas.items()}
+
+    @staticmethod
+    def _quantile_normalize_proba(proba: np.ndarray) -> np.ndarray:
+        """Per-base proba calibration: rank max(proba) across bars and map to
+        uniform[0.5, 1.0]. The full proba vector is rescaled at each bar so
+        the chosen class gets the new normalized max, with the remaining
+        (1 - new_max) redistributed across non-max classes proportional to
+        their original ratios.
+
+        Equalizes vote influence across heterogeneous bases — a base whose
+        native proba is sharp (e.g. LogReg ~ [0.99, 0.01]) is brought down
+        to the same calibration as a base whose native proba is soft
+        (e.g. RL ~ [0.6, 0.4]). Each base's relative confidence ordering
+        within its own bars is preserved; only the absolute scale is
+        normalized to [0.5, 1.0].
+        """
+        proba = np.asarray(proba, dtype=np.float64)
+        n, c = proba.shape
+        if n == 0:
+            return proba.astype(np.float32)
+        argmax = proba.argmax(axis=1)              # (N,)
+        max_vals = proba[np.arange(n), argmax]     # (N,)
+        # Quantile rank max(proba) → uniform [0.5, 1.0]
+        order = np.argsort(max_vals, kind="stable")
+        ranks = np.empty(n, dtype=np.float64)
+        ranks[order] = np.arange(n)
+        rank_fraction = ranks / max(n - 1, 1)      # [0, 1]
+        new_max = 0.5 + 0.5 * rank_fraction        # [0.5, 1.0]
+        # Build mask: True for non-argmax classes per row
+        non_argmax = np.ones((n, c), dtype=bool)
+        non_argmax[np.arange(n), argmax] = False
+        other_sums = (proba * non_argmax).sum(axis=1)        # (N,)
+        remaining = 1.0 - new_max                            # (N,)
+        # Scale non-argmax probas: keep ratios, total = remaining
+        safe_other = np.maximum(other_sums, 1e-12)
+        scale = remaining / safe_other                       # (N,)
+        out = proba * non_argmax * scale[:, None]            # (N, C)
+        # Rows where all mass was at argmax: distribute uniformly among others
+        all_at_argmax = other_sums <= 1e-12
+        if all_at_argmax.any() and c > 1:
+            uniform_share = remaining[all_at_argmax] / (c - 1)
+            out[all_at_argmax] = non_argmax[all_at_argmax] * uniform_share[:, None]
+        # Place the new max at the chosen class
+        out[np.arange(n), argmax] = new_max
+        return out.astype(np.float32)
 
     # ------------------------------------------------------------------
     # Weighting strategies
@@ -173,7 +239,8 @@ class ConfidenceEnsemblePredictor(EnsemblePredictor):
             return None
         names = list(self._fold_base_probas.keys())
         global_w = self._compute_weights(names)
-        stack = np.stack([self._fold_base_probas[n] for n in names], axis=0)  # (M, N, C)
+        base_probas = self._maybe_normalize_probas(self._fold_base_probas)
+        stack = np.stack([base_probas[n] for n in names], axis=0)  # (M, N, C)
         cert = stack.max(axis=2)                                              # (M, N)
         combined = global_w[:, None] * cert                                   # (M, N)
         combined = combined / np.maximum(combined.sum(axis=0, keepdims=True), 1e-12)

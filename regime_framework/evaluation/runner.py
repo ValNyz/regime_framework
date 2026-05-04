@@ -212,19 +212,20 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     # sharper proba, bars with similar Q-values contribute flatter proba.
     proba_families = {"classical", "deep_nets", "transformer", "rl"}
     if cfg.predictors.include_ensemble and (proba_families & families):
-        _add(EnsemblePredictor)
-        _add(ConfidenceEnsemblePredictor)
+        global_normalize = bool(cfg.predictors.ensemble_normalize_proba)
+        _add(EnsemblePredictor, proba_normalize=global_normalize)
+        _add(ConfidenceEnsemblePredictor, proba_normalize=global_normalize)
 
         # Subset ensembles — one per entry in cfg.predictors.ensemble_groups.
         # Each produces Ensemble-{name} (and -FT) voting only over the named
-        # bases. Optional `method` field selects "uniform" (default) or
-        # "confidence" — the latter creates a ConfidenceEnsemblePredictor
-        # that weights each base per-bar by its max(predict_proba). Useful
-        # to pair with RL bases that expose Q-margin via predict_proba.
+        # bases. Optional fields:
+        #   method: "uniform" (default) or "confidence"
+        #   normalize_proba: bool, overrides cfg.predictors.ensemble_normalize_proba
         for group in cfg.predictors.ensemble_groups:
             gname = str(group.get("name", "")).strip()
             gbases = list(group.get("bases", []))
             method = str(group.get("method", "uniform")).strip().lower()
+            normalize = bool(group.get("normalize_proba", global_normalize))
             if not gname or not gbases:
                 console.print(f"[yellow]WARN: ignoring malformed ensemble_group: {group}[/yellow]")
                 continue
@@ -235,10 +236,14 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 )
                 method = "uniform"
             cls = ConfidenceEnsemblePredictor if method == "confidence" else EnsemblePredictor
-            out.append(cls(bases_filter=gbases, name_suffix=f"-{gname}"))
+            out.append(cls(
+                bases_filter=gbases, name_suffix=f"-{gname}",
+                proba_normalize=normalize,
+            ))
             if add_ft:
                 out.append(cls(
                     finetune=True, bases_filter=gbases, name_suffix=f"-{gname}",
+                    proba_normalize=normalize,
                 ))
 
     # Disabled list — match the final display name (post -FT and post-suffix).
@@ -794,7 +799,12 @@ class BenchmarkRunner:
 
             # Multi-coin-aware predictors (RL agents, pretrained fine_tuned)
             # need per-coin price series, not the stacked X. Push them now,
-            # before fit() is called inside _fit_eval_loop.
+            # before fit() is called inside _fit_eval_loop. Pass X_te.columns
+            # as the canonical column set so each coin's X is aligned to the
+            # exact feature set the predictor will see at predict time
+            # (otherwise _stack_with_target's column-intersection drops some
+            # target columns and the RL predictor fits with N features but
+            # predicts with N-k features — shape mismatch crash).
             if cfg.training.extra_coins:
                 self._push_multi_coin_data_to_predictors(
                     predictors, cfg,
@@ -802,6 +812,7 @@ class BenchmarkRunner:
                     target_d=target_pre_d, target_df=target_pre_df,
                     fold_d_start=target_pre_d.iloc[0],
                     fold_d_end=target_pre_d.iloc[-1],
+                    expected_cols=list(X_te.columns),
                 )
 
             fold_results, fold_predictions = self._fit_eval_loop(
@@ -1289,6 +1300,7 @@ class BenchmarkRunner:
         target_df: pd.DataFrame,
         fold_d_start,
         fold_d_end,
+        expected_cols: list | None = None,
     ) -> None:
         """Build per-coin (X, y, dates, df) views clipped to the fold's date
         range and push them onto every multi-coin-aware predictor in the list.
@@ -1297,9 +1309,24 @@ class BenchmarkRunner:
         Filters extras to the same date window as the target's fold so the
         multi-coin training stays consistent with the rolling-window
         philosophy (constant timespan across all coins).
+
+        expected_cols (optional): canonical column set used at predict time.
+        When set, every coin's X is reindexed to this column set so RL
+        predictors fit and predict on the same feature dimension. Adds the
+        coin's own one-hot at value 1.0 (others stay 0).
         """
+        def _align_coin_X(X: pd.DataFrame, coin_name: str) -> pd.DataFrame:
+            if expected_cols is None:
+                return X
+            X = X.reindex(columns=expected_cols, fill_value=0.0)
+            ccol = f"coin_{coin_name}"
+            if ccol in X.columns:
+                X[ccol] = 1.0
+            return X
+
         target_data = {
-            "X": target_X, "y": target_y, "dates": target_d, "df": target_df,
+            "X": _align_coin_X(target_X, cfg.target),
+            "y": target_y, "dates": target_d, "df": target_df,
         }
 
         # Build extras dict — read from cache (filled lazily by _stack_with_target)
@@ -1322,7 +1349,8 @@ class BenchmarkRunner:
             # Only include if X and df align in length (drop coins where they don't)
             if len(Xc_w) >= 2 and len(dfc_w) >= 2 and len(Xc_w) == len(dfc_w):
                 extras_data[coin.target] = {
-                    "X": Xc_w, "y": yc_w, "dates": dc_w, "df": dfc_w,
+                    "X": _align_coin_X(Xc_w, coin.target),
+                    "y": yc_w, "dates": dc_w, "df": dfc_w,
                 }
 
         # Push to opt-in predictors only

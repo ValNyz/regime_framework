@@ -294,6 +294,12 @@ class PredictorConfig:
     #   disabled: [MLP-FT, Ensemble-trees-FT]
     # Skips those predictors entirely; same family / FT defaults otherwise.
     disabled: list[str] = field(default_factory=list)
+    # When True, ensemble predictors quantile-normalize each base's proba to
+    # uniform[0.5, 1.0] in max(proba) before averaging. Equalizes vote
+    # influence across heterogeneous families (e.g. classical's near-one-hot
+    # proba vs RL's softer softmax). Per-group `normalize_proba` overrides
+    # this default for individual ensemble_groups entries.
+    ensemble_normalize_proba: bool = False
     # When False, skip per-fold and end-of-CV feature importance computation.
     # Useful when you only care about predictor metrics (κ / gain) and want
     # cleaner console output / faster runs (no permutation fallback overhead
