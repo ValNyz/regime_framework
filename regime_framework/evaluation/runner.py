@@ -509,7 +509,7 @@ class BenchmarkRunner:
                 y_pred=pred_arr,
                 closes=closes_te,
                 dates=np.asarray(d_te.values) if d_te is not None else None,
-                timeframe=cfg.timeframe,
+                timeframe=self.cfg.timeframe,
                 metadata={"elapsed_sec": round(time.time() - t0, 2)},
             )
             results.append(res)
