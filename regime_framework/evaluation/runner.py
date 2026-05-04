@@ -497,6 +497,8 @@ class BenchmarkRunner:
                 y_true=np.asarray(y_te.values),
                 y_pred=pred_arr,
                 closes=closes_te,
+                dates=np.asarray(d_te.values) if d_te is not None else None,
+                timeframe=cfg.timeframe,
                 metadata={"elapsed_sec": round(time.time() - t0, 2)},
             )
             results.append(res)
@@ -504,11 +506,18 @@ class BenchmarkRunner:
             dk_str = (
                 f"{res.dir_kappa:+.3f}" if not np.isnan(res.dir_kappa) else "  nan"
             )
+            sh_str = f"{res.sharpe:+.2f}" if not np.isnan(res.sharpe) else " nan"
+            dd_str = f"{res.max_dd*100:+.1f}%" if not np.isnan(res.max_dd) else "  nan"
+            cm_str = (
+                f"{res.n_positive_months}/{res.n_total_months}"
+                if res.n_total_months else " 0/0"
+            )
             console.print(
                 f"  [green]✔[/green] {predictor.name:35s} "
                 f"acc={res.accuracy:.3f} κ={res.kappa:+.3f} dκ={dk_str} "
                 f"F1={res.f1_macro:.3f} "
-                f"gain={res.synth_gain*100:+.1f}% ({res.metadata['elapsed_sec']}s)"
+                f"gain={res.synth_gain*100:+.1f}% sh={sh_str} dd={dd_str} "
+                f"+m={cm_str} ({res.metadata['elapsed_sec']}s)"
             )
 
         # ---- Pass 1: base predictors (also try predict_proba for ensemble) ----
@@ -804,6 +813,10 @@ class BenchmarkRunner:
                     "accuracy": r.accuracy, "kappa": r.kappa, "f1_macro": r.f1_macro,
                     "dir_kappa": r.dir_kappa,
                     "synth_gain": r.synth_gain,
+                    "sharpe": r.sharpe,
+                    "max_dd": r.max_dd,
+                    "n_positive_months": r.n_positive_months,
+                    "n_total_months": r.n_total_months,
                     "bh_gain": bh_gain_fold,
                     "n_test": r.n_test, "elapsed_sec": r.metadata.get("elapsed_sec", 0),
                     "test_start": str(d_te.iloc[0].date()),
@@ -1050,6 +1063,10 @@ class BenchmarkRunner:
             gain_mean=("synth_gain", "mean"),
             gain_std=("synth_gain", "std"),
             gain_total=("synth_gain", _compound),
+            sharpe_mean=("sharpe", "mean"),
+            max_dd_min=("max_dd", "min"),  # min of negative DDs = worst DD
+            n_pos_months_sum=("n_positive_months", "sum"),
+            n_total_months_sum=("n_total_months", "sum"),
             n_folds=("fold", "count"),
         ).reset_index()
 
@@ -1086,19 +1103,18 @@ class BenchmarkRunner:
         table = Table(title=title)
         for col in (
             "predictor", "family", "κ_mean", "κ_std", "dir-κ", "acc", "F1",
-            "gain_mean", "gain_std", "gain_total", "vs_BH", "n_folds",
+            "gain_mean", "gain_total", "vs_BH", "Sharpe", "maxDD", "+m", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
 
         # B&H reference row at the top.
-        bh_std_str = f"[dim]{bh_std*100:.1f}%[/dim]" if not np.isnan(bh_std) else "[dim]--[/dim]"
         table.add_row(
             "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
             "--", "--", "--", "--", "--",
             f"[dim]{bh_mean*100:+.1f}%[/dim]",
-            bh_std_str,
             f"[dim]{bh_total*100:+.1f}%[/dim]",
             "[dim]0.0%[/dim]",
+            "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]",
             f"[dim]{int(len(bh_per_fold))}[/dim]",
         )
 
@@ -1117,17 +1133,25 @@ class BenchmarkRunner:
             gain_total = float(r["gain_total"])
             vs_bh = float(r["gain_vs_bh"])
             vs_bh_color = "green" if vs_bh > 0 else "red"
-            gstd = float(r["gain_std"]) if not pd.isna(r["gain_std"]) else float("nan")
-            gstd_str = f"{gstd*100:.1f}%" if not np.isnan(gstd) else "--"
+            sharpe = float(r["sharpe_mean"]) if not pd.isna(r["sharpe_mean"]) else float("nan")
+            sh_str = f"{sharpe:+.2f}" if not np.isnan(sharpe) else "--"
+            sh_color = "green" if sharpe > 1.0 else ("yellow" if sharpe > 0 else "red")
+            max_dd = float(r["max_dd_min"]) if not pd.isna(r["max_dd_min"]) else float("nan")
+            dd_str = f"{max_dd*100:+.1f}%" if not np.isnan(max_dd) else "--"
+            n_pos = int(r["n_pos_months_sum"]) if not pd.isna(r["n_pos_months_sum"]) else 0
+            n_tot = int(r["n_total_months_sum"]) if not pd.isna(r["n_total_months_sum"]) else 0
+            cm_str = f"{n_pos}/{n_tot}" if n_tot else "0/0"
             table.add_row(
                 str(r["predictor"]), str(r["family"]),
                 kstr, f"{r['kappa_std']:.3f}",
                 dk_str,
                 f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}",
                 f"{r['gain_mean']*100:+.1f}%",
-                gstd_str,
                 f"{gain_total*100:+.1f}%",
                 f"[{vs_bh_color}]{vs_bh*100:+.1f}%[/{vs_bh_color}]",
+                f"[{sh_color}]{sh_str}[/{sh_color}]" if not np.isnan(sharpe) else "--",
+                dd_str,
+                cm_str,
                 str(int(r["n_folds"])),
             )
         console.print(table)

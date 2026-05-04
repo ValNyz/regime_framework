@@ -68,6 +68,86 @@ def buy_and_hold_gain(closes: np.ndarray) -> float:
     return float(closes[-1] / closes[0] - 1.0)
 
 
+# Periods per year per timeframe — used for annualizing Sharpe.
+# Crypto markets are 24/7, so 365-day year (not 252 trading days like equities).
+_PERIODS_PER_YEAR = {
+    "1m": 60 * 24 * 365,
+    "5m": 12 * 24 * 365,
+    "15m": 4 * 24 * 365,
+    "30m": 2 * 24 * 365,
+    "1h": 24 * 365,
+    "2h": 12 * 365,
+    "4h": 6 * 365,
+    "8h": 3 * 365,
+    "12h": 2 * 365,
+    "1d": 365,
+}
+
+
+def periods_per_year(timeframe: str) -> int:
+    """Return # bars per year for a given timeframe string (e.g. '1h' → 8760).
+
+    Falls back to 1h (8760) for unknown timeframes — emit no warning since
+    the metric is still meaningful, just may be miscalibrated.
+    """
+    return _PERIODS_PER_YEAR.get(timeframe, _PERIODS_PER_YEAR["1h"])
+
+
+def sharpe_ratio(
+    closes: np.ndarray,
+    labels: np.ndarray,
+    periods_per_year: int = 24 * 365,
+) -> float:
+    """Annualized Sharpe of the synth strategy (long-bull / short-bear / flat).
+
+    Sharpe = mean(strategy_log_ret) / std(strategy_log_ret) * sqrt(ppy).
+    Risk-free rate assumed 0 (per-bar log returns net of B&H drift). Uses
+    the same no-look-ahead semantics as synth_equity_curve.
+    """
+    closes = np.asarray(closes, dtype=np.float64)
+    labels_arr = np.asarray(labels)
+    if len(closes) < 3:
+        return float("nan")
+    log_ret_rel = np.log(closes[1:] / closes[:-1])
+    sign = np.zeros(len(labels_arr), dtype=np.float64)
+    sign[labels_arr == "bull"] = +1.0
+    sign[labels_arr == "bear"] = -1.0
+    strategy_log_ret = sign[:-1] * log_ret_rel
+    sd = float(np.std(strategy_log_ret, ddof=1))
+    if sd <= 1e-12:
+        return float("nan")
+    return float(np.mean(strategy_log_ret) / sd * np.sqrt(periods_per_year))
+
+
+def max_drawdown(equity: np.ndarray) -> float:
+    """Maximum peak-to-trough drawdown of the equity curve, as a fraction.
+
+    Returns a NEGATIVE number (or 0 for monotonic equity). E.g. -0.25 means
+    the deepest decline from a running peak was 25%.
+    """
+    eq = np.asarray(equity, dtype=np.float64)
+    if len(eq) < 2 or np.all(eq <= 0):
+        return float("nan")
+    running_max = np.maximum.accumulate(eq)
+    dd = (eq - running_max) / running_max
+    return float(np.min(dd))
+
+
+def consistency_positive_months(
+    monthly_gains: dict[str, float],
+) -> tuple[int, int]:
+    """Count of (positive months, total months) from a {YYYY-MM: gain} dict.
+
+    Useful as a stability check: a strategy with high total gain but only
+    20% positive months is far more fragile than one with the same gain
+    spread across 70% positive months.
+    """
+    if not monthly_gains:
+        return 0, 0
+    n_pos = sum(1 for v in monthly_gains.values() if v > 0)
+    return int(n_pos), int(len(monthly_gains))
+
+
 def compound_returns(gains: np.ndarray | list[float]) -> float:
     """Compound a sequence of fractional returns: prod(1 + g) - 1.
     NaN-tolerant: drops NaNs before compounding.
@@ -150,14 +230,19 @@ def evaluate(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     closes: np.ndarray | None = None,
+    dates: np.ndarray | pd.Series | None = None,
+    timeframe: str = "1h",
     metadata: dict | None = None,
 ) -> PredictionResult:
     """Compute the standard regime classification metrics + synth gain.
 
     `closes` (optional) is the close price series aligned to y_pred. When
-    given, computes synth_gain = total fractional return of the long-bull /
-    short-bear strategy on this test slice (uses raw predictions, no
-    smoothing). Without `closes`, synth_gain stays NaN.
+    given, computes synth_gain plus the trade-quality companions:
+      - sharpe: annualized (uses `timeframe` to compute periods_per_year)
+      - max_dd: deepest peak-to-trough drawdown of the equity curve
+      - n_positive_months / n_total_months: consistency, requires `dates`
+
+    Without `closes`, all the strategy metrics stay NaN/0.
     """
     # Filter unlabelled positions
     mask = (y_true != "") & (y_pred != "")
@@ -187,16 +272,30 @@ def evaluate(
 
     synth_gain = float("nan")
     dir_kappa = float("nan")
+    sharpe = float("nan")
+    max_dd_v = float("nan")
+    n_pos_months = 0
+    n_total_months = 0
     if closes is not None and len(closes) == len(y_pred):
         # Use the masked-aligned closes + predictions so unlabeled bars are
         # excluded from PnL too (they'd be flat anyway, but cleaner).
         closes_arr = np.asarray(closes)
         closes_f = closes_arr[mask]
-        _, synth_gain = synth_equity_curve(closes_f, y_pred_f)
+        equity, synth_gain = synth_equity_curve(closes_f, y_pred_f)
         # Directional kappa: agreement between prediction and next-bar return
         # sign. Computed on raw (unmasked) y_pred so we use all bars where the
         # strategy could actually take a position.
         dir_kappa = directional_kappa(closes_arr, y_pred)
+        # Sharpe + max DD on the masked-aligned curve
+        ppy = periods_per_year(timeframe)
+        sharpe = sharpe_ratio(closes_f, y_pred_f, periods_per_year=ppy)
+        max_dd_v = max_drawdown(equity)
+        # Consistency: needs dates, masked the same way
+        if dates is not None and len(dates) == len(y_pred):
+            dates_arr = np.asarray(dates)
+            dates_f = dates_arr[mask]
+            monthly = synth_gain_by_month(closes_f, y_pred_f, dates_f)
+            n_pos_months, n_total_months = consistency_positive_months(monthly)
 
     return PredictionResult(
         name=name, family=family,
@@ -204,5 +303,9 @@ def evaluate(
         confusion=cm, n_test=int(len(y_true_f)),
         synth_gain=synth_gain,
         dir_kappa=dir_kappa,
+        sharpe=sharpe,
+        max_dd=max_dd_v,
+        n_positive_months=n_pos_months,
+        n_total_months=n_total_months,
         metadata=metadata or {},
     )

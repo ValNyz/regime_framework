@@ -77,6 +77,17 @@ class PredictionResult:
     # gain-aligned alternative to the standard κ when the training label is
     # itself off-target (e.g. trend-scan trained, but we want trade-aligned eval).
     dir_kappa: float = float("nan")
+    # Annualized Sharpe of the synth strategy (returns / vol × sqrt(periods_per_year)).
+    # Risk-free = 0; uses the framework's bar-level log returns. NaN when closes
+    # weren't supplied or the strategy had zero realized variance.
+    sharpe: float = float("nan")
+    # Max peak-to-trough drawdown of the synth equity curve, as a NEGATIVE
+    # fraction (e.g. -0.25 = 25% deepest decline). 0 if equity was monotonic.
+    max_dd: float = float("nan")
+    # Consistency: positive-return months over the test slice. Useful to
+    # distinguish "lucky-month" gains from steady ones.
+    n_positive_months: int = 0
+    n_total_months: int = 0
     metadata: dict = field(default_factory=dict)
 
 
