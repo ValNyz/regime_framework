@@ -110,17 +110,25 @@ def rolling_walk_forward_splits(
     step = step_bars if step_bars is not None else test_window_bars
     if step <= 0:
         return
-    fold_id = 0
-    start = 0
-    while start + train_window_bars + purge_bars + test_window_bars <= n:
+    # Last-aligned: anchor the final fold's test_end to n (data end), step
+    # backward from there so the most recent data is always evaluated. The
+    # alternative (first-aligned, starting at 0) silently discards trailing
+    # bars when (n - n_window) doesn't divide evenly by step — at 1h,
+    # step=2190 (3mo) and n=57742 leaves ~80 days of recent data unused.
+    n_window = train_window_bars + purge_bars + test_window_bars
+    if n < n_window:
+        return
+    total_folds = (n - n_window) // step + 1
+    last_start = n - n_window  # last fold's start s.t. test_end == n
+    first_start = last_start - (total_folds - 1) * step
+    for fold_id in range(total_folds):
+        start = first_start + fold_id * step
         train_end = start + train_window_bars
         test_start = train_end + purge_bars
         test_end = test_start + test_window_bars
         train_idx = np.arange(start, train_end)
         test_idx = np.arange(test_start, test_end)
         yield train_idx, test_idx, fold_id
-        fold_id += 1
-        start += step
 
 
 def walk_forward_splits(
