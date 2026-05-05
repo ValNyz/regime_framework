@@ -135,14 +135,14 @@ class SplitConfig:
     # wastes recent data. Set rl_purge_bars=1 (default) to use a minimal
     # 1-bar purge for RL training data only. None = use global purge_bars.
     rl_purge_bars: int | None = 1
-    # When True, fit predictors at fold 0 only and reuse the same model across
-    # every subsequent test window — so per-fold metrics measure how a SINGLE
-    # trained model degrades / holds up over rolling time, not how a freshly
-    # retrained model performs each fold. Useful to compare deployment-without-
-    # retraining performance against the per-fold-retrain baseline (default).
-    # Multi-coin data is also only pushed at fold 0; subsequent folds reuse
-    # whatever the predictor learned from that initial training set.
-    train_once: bool = False
+    # Refit cadence. 1 (default) = refit each fold (per-fold-retrain baseline).
+    # N > 1 = refit every N folds, reuse the model on the in-between folds —
+    # e.g. retrain_every=3 with monthly folds = quarterly retrain. 0 = fit
+    # only at fold 0 and never again ("train once and deploy"). Lets you find
+    # the right cadence between "always retrain" (noisy adaptation) and
+    # "never retrain" (stable but stale). Multi-coin data is also only
+    # pushed on the folds that actually train.
+    retrain_every: int = 1
 
 
 @dataclass

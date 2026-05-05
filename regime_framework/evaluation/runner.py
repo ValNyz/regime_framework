@@ -729,21 +729,28 @@ class BenchmarkRunner:
         last_fold_X_te = None
         last_fold_y_te = None
 
-        # train_once: when set, fit predictors on fold 0's train slice only
-        # and reuse the same model on every subsequent fold's test slice.
-        # Lets the user compare "freshly retrained per fold" (default) vs
-        # "deployed once and never updated" on otherwise identical eval splits.
-        train_once = bool(getattr(cfg.split, "train_once", False))
-        first_fold_seen = False
-        if train_once:
+        # Refit cadence — see SplitConfig.retrain_every.
+        retrain_every = int(getattr(cfg.split, "retrain_every", 1))
+        if retrain_every <= 0:
             console.print(
-                f"  [cyan]train_once mode[/cyan]: fitting predictors at fold 0 "
+                f"  [cyan]retrain_every=0[/cyan]: fitting predictors at fold 0 "
                 f"only; subsequent folds reuse the trained model."
             )
+        elif retrain_every > 1:
+            console.print(
+                f"  [cyan]retrain_every={retrain_every}[/cyan]: refit predictors "
+                f"every {retrain_every} folds; reuse the trained model in between."
+            )
+        fold_idx_in_loop = 0
 
         for train_idx, test_idx, fold_id in split_iter:
-            skip_fit = train_once and first_fold_seen
-            first_fold_seen = True
+            if retrain_every <= 0:
+                skip_fit = fold_idx_in_loop > 0
+            elif retrain_every == 1:
+                skip_fit = False
+            else:
+                skip_fit = (fold_idx_in_loop % retrain_every) != 0
+            fold_idx_in_loop += 1
             X_tr = X.iloc[train_idx]
             y_tr = y.iloc[train_idx]
             d_tr = dates.iloc[train_idx]
@@ -970,7 +977,44 @@ class BenchmarkRunner:
             monthly_df = pd.DataFrame(monthly_rows)
             monthly_df["cv_mode"] = mode
             monthly_df.to_csv(RESULTS_DIR / f"cv_{mode}_monthly_gain.csv", index=False)
-        self._print_cv_summary(per_fold_df, mode, cfg=cfg)
+
+        # Stitched monthly consistency — compute n_positive / n_total over the
+        # CONCATENATED OOS series per predictor, replacing the per-fold sum
+        # which double-counts months that span fold boundaries (e.g. a 30-day
+        # fold spanning May 28 → June 27 contributes BOTH May and June, then
+        # the next fold contributes June again).
+        from .metrics import synth_gain_by_month, consistency_positive_months
+        stitched_consistency: dict[str, tuple[int, int]] = {}
+        if all_fold_preds:
+            cost = float(cfg.predictors.evaluation_transaction_cost)
+            all_pred_names: set[str] = set()
+            for fp in all_fold_preds:
+                all_pred_names.update(fp["predictions"].keys())
+            for pname in all_pred_names:
+                preds_list, dates_list, closes_list = [], [], []
+                for fp in all_fold_preds:
+                    if pname not in fp["predictions"]:
+                        continue
+                    preds_list.append(np.asarray(fp["predictions"][pname]))
+                    dates_list.append(np.asarray(fp["d_te"].values))
+                    if "close" in df.columns:
+                        cl = df.loc[fp["test_index"], "close"].to_numpy(dtype=np.float64)
+                        closes_list.append(cl)
+                if not preds_list or not closes_list:
+                    continue
+                preds_concat = np.concatenate(preds_list)
+                dates_concat = np.concatenate(dates_list)
+                closes_concat = np.concatenate(closes_list)
+                if len(preds_concat) != len(closes_concat):
+                    continue
+                monthly = synth_gain_by_month(
+                    closes_concat, preds_concat, dates_concat, transaction_cost=cost,
+                )
+                stitched_consistency[pname] = consistency_positive_months(monthly)
+
+        self._print_cv_summary(
+            per_fold_df, mode, cfg=cfg, stitched_consistency=stitched_consistency,
+        )
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
         # kappa across all folds, then concatenate ITS predictions over all
@@ -1115,7 +1159,13 @@ class BenchmarkRunner:
             "(future-info advantage). Large Δ = predictor relies on regime stability.[/dim]"
         )
 
-    def _print_cv_summary(self, per_fold: pd.DataFrame, mode: str, cfg: RunConfig | None = None) -> None:
+    def _print_cv_summary(
+        self,
+        per_fold: pd.DataFrame,
+        mode: str,
+        cfg: RunConfig | None = None,
+        stitched_consistency: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
         from .metrics import compound_returns
 
         def _compound(series: pd.Series) -> float:
@@ -1136,6 +1186,14 @@ class BenchmarkRunner:
             n_total_months_sum=("n_total_months", "sum"),
             n_folds=("fold", "count"),
         ).reset_index()
+
+        # Replace per-fold-summed month counts (which double-count months
+        # spanning fold boundaries) with stitched-OOS unique month counts.
+        if stitched_consistency:
+            def _stitched_pos(name): return stitched_consistency.get(name, (0, 0))[0]
+            def _stitched_tot(name): return stitched_consistency.get(name, (0, 0))[1]
+            agg["n_pos_months_sum"] = agg["predictor"].map(_stitched_pos)
+            agg["n_total_months_sum"] = agg["predictor"].map(_stitched_tot)
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
         bh_per_fold = per_fold.drop_duplicates("fold").set_index("fold").get(
