@@ -14,9 +14,40 @@ from ..config import LABEL_ORDER
 from ..predictors.base import PredictionResult
 
 
+def _strategy_log_returns(
+    closes: np.ndarray,
+    labels: np.ndarray,
+    transaction_cost: float = 0.0,
+) -> np.ndarray:
+    """Per-step strategy log returns net of transaction cost.
+
+    Returns array of length n-1: strategy_log_ret[t] = sign(label[t]) *
+    log(close[t+1]/close[t]) - cost * |sign[t] - sign[t-1]|. The cost
+    deduction is applied at the bar where the position changes (entry,
+    exit, or flip). Initial position assumed flat (0); first bar's cost
+    is charged for the entry move from 0 to sign[0].
+
+    Used by synth_equity_curve, sharpe_ratio, synth_gain_by_month — single
+    source of truth for cost-adjusted strategy returns. Set
+    transaction_cost=0 to get the original cost-blind series.
+    """
+    closes = np.asarray(closes, dtype=np.float64)
+    labels_arr = np.asarray(labels)
+    log_ret_rel = np.log(closes[1:] / closes[:-1])               # length n-1
+    sign = np.zeros(len(labels_arr), dtype=np.float64)
+    sign[labels_arr == "bull"] = +1.0
+    sign[labels_arr == "bear"] = -1.0
+    strategy_log_ret = sign[:-1] * log_ret_rel                   # length n-1
+    if transaction_cost > 0:
+        position_change = np.abs(np.diff(sign, prepend=0.0))     # length n
+        strategy_log_ret = strategy_log_ret - transaction_cost * position_change[:-1]
+    return strategy_log_ret
+
+
 def synth_equity_curve(
     closes: np.ndarray,
     labels: np.ndarray,
+    transaction_cost: float = 0.0,
 ) -> tuple[np.ndarray, float]:
     """Compute the long-bull / short-bear / flat-else synth-equity curve.
 
@@ -24,10 +55,11 @@ def synth_equity_curve(
       - At end of bar t, observe close[t] and the model's label[t].
       - Take position sign(label[t]) (+1 long bull, -1 short bear, 0 else).
       - Hold until end of bar t+1 → earn sign(label[t]) * log(close[t+1]/close[t]).
-      - That contribution is the strategy log return at step (t → t+1).
+      - Pay `transaction_cost * |sign[t] - sign[t-1]|` at the entry/flip step.
+      - Net contribution to log equity at (t → t+1).
 
-    Hourly compounded log returns, no costs/slippage. The curve is normalized
-    to start at closes[0] so it overlays cleanly with the actual price.
+    Hourly compounded log returns. The curve is normalized to start at
+    closes[0] so it overlays cleanly with the actual price.
 
     Returns:
         equity: cumulative equity matching len(closes), starting at closes[0]
@@ -37,20 +69,10 @@ def synth_equity_curve(
     and regime_plots._plot_B / plot_synth_equity_multi / plot_stitched_oos.
     """
     closes = np.asarray(closes, dtype=np.float64)
-    labels_arr = np.asarray(labels)
     if len(closes) < 2:
         zero_eq = np.full(len(closes), float(closes[0]) if len(closes) else 0.0)
         return zero_eq, 0.0
-    # Per-step relative log return (length n-1):
-    #   log_ret_rel[t] = log(close[t+1] / close[t])  for t in [0, n-2]
-    log_ret_rel = np.log(closes[1:] / closes[:-1])
-    sign = np.zeros(len(labels_arr), dtype=np.float64)
-    sign[labels_arr == "bull"] = +1.0
-    sign[labels_arr == "bear"] = -1.0
-    # Strategy log return at step (t → t+1):
-    #   strategy_log_ret[t] = sign(label[t]) * log_ret_rel[t]
-    # Position is decided AFTER observing close[t], applied to the next bar.
-    strategy_log_ret = sign[:-1] * log_ret_rel
+    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost)
     cum_log = np.zeros(len(closes))
     cum_log[1:] = np.cumsum(strategy_log_ret)
     equity = np.exp(cum_log) * float(closes[0])
@@ -97,22 +119,18 @@ def sharpe_ratio(
     closes: np.ndarray,
     labels: np.ndarray,
     periods_per_year: int = 24 * 365,
+    transaction_cost: float = 0.0,
 ) -> float:
     """Annualized Sharpe of the synth strategy (long-bull / short-bear / flat).
 
     Sharpe = mean(strategy_log_ret) / std(strategy_log_ret) * sqrt(ppy).
-    Risk-free rate assumed 0 (per-bar log returns net of B&H drift). Uses
-    the same no-look-ahead semantics as synth_equity_curve.
+    Risk-free rate assumed 0. transaction_cost (default 0) is deducted on
+    every position change. Same no-look-ahead semantics as synth_equity_curve.
     """
     closes = np.asarray(closes, dtype=np.float64)
-    labels_arr = np.asarray(labels)
     if len(closes) < 3:
         return float("nan")
-    log_ret_rel = np.log(closes[1:] / closes[:-1])
-    sign = np.zeros(len(labels_arr), dtype=np.float64)
-    sign[labels_arr == "bull"] = +1.0
-    sign[labels_arr == "bear"] = -1.0
-    strategy_log_ret = sign[:-1] * log_ret_rel
+    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost)
     sd = float(np.std(strategy_log_ret, ddof=1))
     if sd <= 1e-12:
         return float("nan")
@@ -201,22 +219,17 @@ def synth_gain_by_month(
     closes: np.ndarray,
     labels: np.ndarray,
     dates: np.ndarray | pd.Series,
+    transaction_cost: float = 0.0,
 ) -> dict[str, float]:
     """Per-calendar-month synth_gain. Returns {YYYY-MM: fractional_return}.
 
-    Same no-look-ahead semantics as synth_equity_curve: at bar t, the model
-    label triggers a position held from t to t+1. The realized log return
-    log(close[t+1]/close[t]) is bucketed by date[t] (the position date).
+    Same no-look-ahead semantics as synth_equity_curve. transaction_cost
+    (default 0) is deducted on every position change before bucketing.
     """
     closes = np.asarray(closes, dtype=np.float64)
-    labels_arr = np.asarray(labels)
     if len(closes) < 2:
         return {}
-    log_ret_rel = np.log(closes[1:] / closes[:-1])  # length n-1
-    sign = np.zeros(len(labels_arr), dtype=np.float64)
-    sign[labels_arr == "bull"] = +1.0
-    sign[labels_arr == "bear"] = -1.0
-    strategy_log_ret = sign[:-1] * log_ret_rel  # length n-1
+    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost)
 
     months = pd.to_datetime(dates[:-1]).to_period("M").astype(str)
     df = pd.DataFrame({"month": months, "s": strategy_log_ret})
@@ -232,6 +245,7 @@ def evaluate(
     closes: np.ndarray | None = None,
     dates: np.ndarray | pd.Series | None = None,
     timeframe: str = "1h",
+    transaction_cost: float = 0.0,
     metadata: dict | None = None,
 ) -> PredictionResult:
     """Compute the standard regime classification metrics + synth gain.
@@ -281,20 +295,27 @@ def evaluate(
         # excluded from PnL too (they'd be flat anyway, but cleaner).
         closes_arr = np.asarray(closes)
         closes_f = closes_arr[mask]
-        equity, synth_gain = synth_equity_curve(closes_f, y_pred_f)
+        equity, synth_gain = synth_equity_curve(
+            closes_f, y_pred_f, transaction_cost=transaction_cost,
+        )
         # Directional kappa: agreement between prediction and next-bar return
         # sign. Computed on raw (unmasked) y_pred so we use all bars where the
         # strategy could actually take a position.
         dir_kappa = directional_kappa(closes_arr, y_pred)
-        # Sharpe + max DD on the masked-aligned curve
+        # Sharpe + max DD on the masked-aligned curve, cost-deducted.
         ppy = periods_per_year(timeframe)
-        sharpe = sharpe_ratio(closes_f, y_pred_f, periods_per_year=ppy)
+        sharpe = sharpe_ratio(
+            closes_f, y_pred_f, periods_per_year=ppy,
+            transaction_cost=transaction_cost,
+        )
         max_dd_v = max_drawdown(equity)
         # Consistency: needs dates, masked the same way
         if dates is not None and len(dates) == len(y_pred):
             dates_arr = np.asarray(dates)
             dates_f = dates_arr[mask]
-            monthly = synth_gain_by_month(closes_f, y_pred_f, dates_f)
+            monthly = synth_gain_by_month(
+                closes_f, y_pred_f, dates_f, transaction_cost=transaction_cost,
+            )
             n_pos_months, n_total_months = consistency_positive_months(monthly)
 
     return PredictionResult(

@@ -128,6 +128,13 @@ class SplitConfig:
     train_window_bars: int = 0           # 0 = required for rolling mode
     test_window_bars: int = 0            # 0 = required for rolling mode
     step_bars: int = 0                   # 0 = defaults to test_window_bars
+    # Per-family purge override. Default global purge_bars=max(L_range) protects
+    # classical/transformer predictors from forward-label leakage (trend_scan
+    # looks ahead L bars to label bar t). RL only learns from (state, reward)
+    # where reward is t→t+1 log return — no L-bar lookahead, so the big purge
+    # wastes recent data. Set rl_purge_bars=1 (default) to use a minimal
+    # 1-bar purge for RL training data only. None = use global purge_bars.
+    rl_purge_bars: int | None = 1
 
 
 @dataclass
@@ -319,6 +326,12 @@ class PredictorConfig:
     # Useful when κ and gain disagree (common in strongly-directional markets
     # where "always long" beats κ-skilled predictors on synth_gain).
     rank_by: str = "kappa"
+    # Cost deducted from synth_gain / Sharpe / monthly-gain at evaluation
+    # time, on every position change (entry / exit / flip). Default matches
+    # RL training cost (Binance futures taker, one side; round-trip flip =
+    # 10 bps). Without this, evaluation reports pre-cost equity which won't
+    # reproduce in live execution. Set 0 only for trade-cost-blind sanity.
+    evaluation_transaction_cost: float = 0.0005
     # RL approximator hyperparams. See RLConfig for each field.
     rl: RLConfig = field(default_factory=RLConfig)
 

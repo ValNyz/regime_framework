@@ -515,6 +515,7 @@ class BenchmarkRunner:
                 closes=closes_te,
                 dates=np.asarray(d_te.values) if d_te is not None else None,
                 timeframe=self.cfg.timeframe,
+                transaction_cost=self.cfg.predictors.evaluation_transaction_cost,
                 metadata={"elapsed_sec": round(time.time() - t0, 2)},
             )
             results.append(res)
@@ -744,6 +745,27 @@ class BenchmarkRunner:
             target_pre_d = d_tr.copy()
             target_pre_df = df.loc[X_tr.index].copy()
 
+            # RL-extended slice: RL only has 1-bar lookahead via reward (no
+            # L_range label leakage), so the global purge wastes recent data.
+            # Build an extended target slice ending closer to test_start that
+            # we'll route to RL predictors only.
+            rl_purge = cfg.split.rl_purge_bars
+            rl_extension_bars = 0
+            if (rl_purge is not None) and (rl_purge < purge):
+                rl_extension_bars = int(purge - rl_purge)
+                rl_train_end_pos = int(test_idx[0] - rl_purge)
+                rl_train_positions = np.arange(int(train_idx[0]), rl_train_end_pos)
+                rl_train_positions = rl_train_positions[rl_train_positions < len(X)]
+                target_pre_X_rl = X.iloc[rl_train_positions].copy()
+                target_pre_y_rl = y.iloc[rl_train_positions].copy()
+                target_pre_d_rl = dates.iloc[rl_train_positions].copy()
+                target_pre_df_rl = df.iloc[rl_train_positions].copy()
+            else:
+                target_pre_X_rl = target_pre_X
+                target_pre_y_rl = target_pre_y
+                target_pre_d_rl = target_pre_d
+                target_pre_df_rl = target_pre_df
+
             # Multi-coin: stack target+extras into the train fold
             if cfg.training.extra_coins:
                 X_tr_stacked, y_tr_stacked, d_tr_stacked = self._stack_with_target(
@@ -813,6 +835,9 @@ class BenchmarkRunner:
                     fold_d_start=target_pre_d.iloc[0],
                     fold_d_end=target_pre_d.iloc[-1],
                     expected_cols=list(X_te.columns),
+                    target_X_rl=target_pre_X_rl, target_y_rl=target_pre_y_rl,
+                    target_d_rl=target_pre_d_rl, target_df_rl=target_pre_df_rl,
+                    fold_d_end_rl=target_pre_d_rl.iloc[-1],
                 )
 
             fold_results, fold_predictions = self._fit_eval_loop(
@@ -1125,17 +1150,18 @@ class BenchmarkRunner:
         table = Table(title=title)
         for col in (
             "predictor", "family", "κ_mean", "κ_std", "dir-κ", "acc", "F1",
-            "gain_mean", "gain_total", "vs_BH", "Sharpe", "maxDD", "+m", "n_folds",
+            "gain_mean", "gain_std", "gain_total", "Sharpe", "maxDD", "+m", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
 
         # B&H reference row at the top.
+        bh_std_str = f"[dim]{bh_std*100:.1f}%[/dim]" if not np.isnan(bh_std) else "[dim]--[/dim]"
         table.add_row(
             "[dim]Buy & Hold[/dim]", "[dim]reference[/dim]",
             "--", "--", "--", "--", "--",
             f"[dim]{bh_mean*100:+.1f}%[/dim]",
+            bh_std_str,
             f"[dim]{bh_total*100:+.1f}%[/dim]",
-            "[dim]0.0%[/dim]",
             "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]",
             f"[dim]{int(len(bh_per_fold))}[/dim]",
         )
@@ -1153,8 +1179,18 @@ class BenchmarkRunner:
             dk = float(r["dir_kappa_mean"]) if not pd.isna(r["dir_kappa_mean"]) else float("nan")
             dk_str = f"{dk:+.3f}" if not np.isnan(dk) else "--"
             gain_total = float(r["gain_total"])
-            vs_bh = float(r["gain_vs_bh"])
-            vs_bh_color = "green" if vs_bh > 0 else "red"
+            # Color gain_total: green if beats B&H by 5%+, yellow if positive
+            # but below B&H, red if negative. Using vs_bh as the secondary
+            # cue keeps the table interpretable on bull/bear backdrops.
+            gt_vs_bh = gain_total - bh_total
+            if gain_total > 0 and gt_vs_bh > 0.05:
+                gt_color = "green"
+            elif gain_total > 0:
+                gt_color = "yellow"
+            else:
+                gt_color = "red"
+            gain_std_v = float(r["gain_std"]) if not pd.isna(r["gain_std"]) else float("nan")
+            gstd_str = f"{gain_std_v*100:.1f}%" if not np.isnan(gain_std_v) else "--"
             sharpe = float(r["sharpe_mean"]) if not pd.isna(r["sharpe_mean"]) else float("nan")
             sh_str = f"{sharpe:+.2f}" if not np.isnan(sharpe) else "--"
             sh_color = "green" if sharpe > 1.0 else ("yellow" if sharpe > 0 else "red")
@@ -1169,8 +1205,8 @@ class BenchmarkRunner:
                 dk_str,
                 f"{r['acc_mean']:.3f}", f"{r['f1_mean']:.3f}",
                 f"{r['gain_mean']*100:+.1f}%",
-                f"{gain_total*100:+.1f}%",
-                f"[{vs_bh_color}]{vs_bh*100:+.1f}%[/{vs_bh_color}]",
+                gstd_str,
+                f"[{gt_color}]{gain_total*100:+.1f}%[/{gt_color}]",
                 f"[{sh_color}]{sh_str}[/{sh_color}]" if not np.isnan(sharpe) else "--",
                 dd_str,
                 cm_str,
@@ -1301,6 +1337,11 @@ class BenchmarkRunner:
         fold_d_start,
         fold_d_end,
         expected_cols: list | None = None,
+        target_X_rl: pd.DataFrame | None = None,
+        target_y_rl: pd.Series | None = None,
+        target_d_rl: pd.Series | None = None,
+        target_df_rl: pd.DataFrame | None = None,
+        fold_d_end_rl=None,
     ) -> None:
         """Build per-coin (X, y, dates, df) views clipped to the fold's date
         range and push them onto every multi-coin-aware predictor in the list.
@@ -1312,8 +1353,12 @@ class BenchmarkRunner:
 
         expected_cols (optional): canonical column set used at predict time.
         When set, every coin's X is reindexed to this column set so RL
-        predictors fit and predict on the same feature dimension. Adds the
-        coin's own one-hot at value 1.0 (others stay 0).
+        predictors fit and predict on the same feature dimension.
+
+        target_X_rl / .._rl args (optional): when provided, RL-family
+        predictors receive these extended slices instead of the default
+        target_X. Lets RL skip the global L_range purge gap (no label
+        leakage at RL's 1-bar reward horizon).
         """
         def _align_coin_X(X: pd.DataFrame, coin_name: str) -> pd.DataFrame:
             if expected_cols is None:
@@ -1324,38 +1369,56 @@ class BenchmarkRunner:
                 X[ccol] = 1.0
             return X
 
-        target_data = {
-            "X": _align_coin_X(target_X, cfg.target),
-            "y": target_y, "dates": target_d, "df": target_df,
-        }
+        def _build(target_X, target_y, target_d, target_df, end_clip):
+            """Build (target_data, extras_data) clipped to [fold_d_start, end_clip]."""
+            tdata = {
+                "X": _align_coin_X(target_X, cfg.target),
+                "y": target_y, "dates": target_d, "df": target_df,
+            }
+            extras: dict[str, dict] = {}
+            for coin in cfg.training.extra_coins:
+                cached = self._extra_coin_cache.get(coin.target)
+                if cached is None:
+                    continue
+                Xc, yc, dc, dfc = cached
+                keep = (dc >= fold_d_start) & (dc <= end_clip)
+                if not keep.any():
+                    continue
+                Xc_w = Xc.loc[keep].reset_index(drop=True)
+                yc_w = yc.loc[keep].reset_index(drop=True)
+                dc_w = dc.loc[keep].reset_index(drop=True)
+                df_keep = (dfc["date"] >= fold_d_start) & (dfc["date"] <= end_clip)
+                dfc_w = dfc.loc[df_keep].reset_index(drop=True)
+                if len(Xc_w) >= 2 and len(dfc_w) >= 2 and len(Xc_w) == len(dfc_w):
+                    extras[coin.target] = {
+                        "X": _align_coin_X(Xc_w, coin.target),
+                        "y": yc_w, "dates": dc_w, "df": dfc_w,
+                    }
+            return tdata, extras
 
-        # Build extras dict — read from cache (filled lazily by _stack_with_target)
-        extras_data: dict[str, dict] = {}
-        for coin in cfg.training.extra_coins:
-            cached = self._extra_coin_cache.get(coin.target)
-            if cached is None:
-                continue  # not yet loaded — _stack_with_target loads on first call
-            Xc, yc, dc, dfc = cached
-            # Clip to fold's date range (target_d_start <= date <= target_d_end)
-            keep = (dc >= fold_d_start) & (dc <= fold_d_end)
-            if not keep.any():
-                continue
-            Xc_w = Xc.loc[keep].reset_index(drop=True)
-            yc_w = yc.loc[keep].reset_index(drop=True)
-            dc_w = dc.loc[keep].reset_index(drop=True)
-            # df has full coin history; filter on the same date condition
-            df_keep = (dfc["date"] >= fold_d_start) & (dfc["date"] <= fold_d_end)
-            dfc_w = dfc.loc[df_keep].reset_index(drop=True)
-            # Only include if X and df align in length (drop coins where they don't)
-            if len(Xc_w) >= 2 and len(dfc_w) >= 2 and len(Xc_w) == len(dfc_w):
-                extras_data[coin.target] = {
-                    "X": _align_coin_X(Xc_w, coin.target),
-                    "y": yc_w, "dates": dc_w, "df": dfc_w,
-                }
+        target_data, extras_data = _build(target_X, target_y, target_d, target_df, fold_d_end)
 
-        # Push to opt-in predictors only
+        # RL-specific dataset (extended end clip) — built only if all RL slices
+        # were supplied. Otherwise fall back to the default dataset.
+        rl_supplied = (
+            target_X_rl is not None and target_y_rl is not None
+            and target_d_rl is not None and target_df_rl is not None
+            and fold_d_end_rl is not None
+        )
+        if rl_supplied:
+            target_data_rl, extras_data_rl = _build(
+                target_X_rl, target_y_rl, target_d_rl, target_df_rl, fold_d_end_rl,
+            )
+        else:
+            target_data_rl, extras_data_rl = target_data, extras_data
+
+        # Push, routing per-family.
         for p in predictors:
-            if getattr(p, "is_multi_coin_aware", False):
+            if not getattr(p, "is_multi_coin_aware", False):
+                continue
+            if getattr(p, "family", "") == "rl":
+                p.set_multi_coin_data(target_data_rl, extras_data_rl)
+            else:
                 p.set_multi_coin_data(target_data, extras_data)
 
     def _build_coin_data(
