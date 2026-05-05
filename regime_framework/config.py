@@ -162,7 +162,13 @@ class RLConfig:
     # Shared across approximators
     total_timesteps: int = 100000      # RL training budget per fold (default for all
                                        # approximators; override per-approximator below)
-    transaction_cost: float = 0.0      # 0 = no penalty. Example: 0.001 = 10 bps per flip.
+    # Per-side trading cost in log-return units. Default 5 bps matches Binance
+    # futures taker (~0.05% per side; round-trip flip from +1 to -1 costs
+    # 2 × 0.0005 = 10 bps). Set to 0 only for trade-cost-blind sanity runs;
+    # otherwise the agent learns to flip aggressively on noise and the
+    # reported synth_gain inflates vs realistic execution. Spot venues:
+    # ~0.001. Always-maker (post-only) execution: ~0.0001.
+    transaction_cost: float = 0.0005
     flat_threshold: float = 0.05       # continuous action → flat if |action| < this
     ft_steps_scale: float = 0.5        # FT mode: total_timesteps × this
     # Temperature for predict_proba's softmax over per-action Q-values. None

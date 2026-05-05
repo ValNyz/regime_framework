@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .alignment import merge_backward
+from .alignment import merge_backward, merge_no_lookahead
 from .loaders import load_parquet_or_feather
 
 
@@ -49,12 +49,7 @@ def load_external_features(
         try:
             fund = load_parquet_or_feather(target_funding_path)
             fund_col = "open" if "open" in fund.columns else "funding_rate"
-            merged = pd.merge_asof(
-                df[["date"]].sort_values("date"),
-                fund[["date", fund_col]].rename(columns={fund_col: "fund_rate"}).sort_values("date"),
-                on="date",
-                direction="backward",
-            )
+            merged = merge_no_lookahead(df, fund, {fund_col: "fund_rate"})
             fr = merged["fund_rate"].astype(float)
             feat["target_funding"] = fr.values
             for w in (24, 72, 168, 720):
@@ -71,13 +66,9 @@ def load_external_features(
     if cross_ohlcv_path is not None and cross_ohlcv_path.exists():
         try:
             cross = load_parquet_or_feather(cross_ohlcv_path)
-            merged = pd.merge_asof(
-                df[["date"]].sort_values("date"),
-                cross[["date", "close", "high", "low"]].rename(
-                    columns={"close": "_xc", "high": "_xh", "low": "_xl"}
-                ).sort_values("date"),
-                on="date",
-                direction="backward",
+            merged = merge_no_lookahead(
+                df, cross,
+                {"close": "_xc", "high": "_xh", "low": "_xl"},
             )
             cc = merged["_xc"]
             cross_log_ret = np.log(cc / cc.shift(1))

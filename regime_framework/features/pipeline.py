@@ -69,13 +69,10 @@ class FeaturePipeline:
             if self.target_funding_path is not None and self.target_funding_path.exists():
                 try:
                     from ..data.loaders import load_parquet_or_feather
+                    from ..data.alignment import merge_no_lookahead
                     fund = load_parquet_or_feather(self.target_funding_path)
                     fund_col = "open" if "open" in fund.columns else "funding_rate"
-                    merged = pd.merge_asof(
-                        df[["date"]].sort_values("date"),
-                        fund[["date", fund_col]].rename(columns={fund_col: "fr"}).sort_values("date"),
-                        on="date", direction="backward",
-                    )
+                    merged = merge_no_lookahead(df, fund, {fund_col: "fr"})
                     funding_series = merged["fr"].astype(float)
                     funding_series.index = df.index
                 except Exception as e:
