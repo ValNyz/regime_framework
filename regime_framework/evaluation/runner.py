@@ -491,6 +491,7 @@ class BenchmarkRunner:
         predictors: list[BasePredictor],
         X_tr, y_tr, d_tr, df_tr,
         X_te, y_te, d_te, df_te,
+        skip_fit: bool = False,
     ) -> tuple[list[PredictionResult], dict[str, np.ndarray]]:
         results: list[PredictionResult] = []
         per_predictor_predictions: dict[str, np.ndarray] = {}
@@ -542,7 +543,8 @@ class BenchmarkRunner:
             with console.status(f"[bold green]{predictor.name}[/bold green]"):
                 t0 = time.time()
                 try:
-                    predictor.fit(X_tr, y_tr, d_tr, df_tr)
+                    if not skip_fit:
+                        predictor.fit(X_tr, y_tr, d_tr, df_tr)
                     pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
                     _evaluate(predictor, pred_arr, t0)
                     # Store proba for ensemble (base may return None if unsupported).
@@ -727,7 +729,21 @@ class BenchmarkRunner:
         last_fold_X_te = None
         last_fold_y_te = None
 
+        # train_once: when set, fit predictors on fold 0's train slice only
+        # and reuse the same model on every subsequent fold's test slice.
+        # Lets the user compare "freshly retrained per fold" (default) vs
+        # "deployed once and never updated" on otherwise identical eval splits.
+        train_once = bool(getattr(cfg.split, "train_once", False))
+        first_fold_seen = False
+        if train_once:
+            console.print(
+                f"  [cyan]train_once mode[/cyan]: fitting predictors at fold 0 "
+                f"only; subsequent folds reuse the trained model."
+            )
+
         for train_idx, test_idx, fold_id in split_iter:
+            skip_fit = train_once and first_fold_seen
+            first_fold_seen = True
             X_tr = X.iloc[train_idx]
             y_tr = y.iloc[train_idx]
             d_tr = dates.iloc[train_idx]
@@ -827,7 +843,10 @@ class BenchmarkRunner:
             # (otherwise _stack_with_target's column-intersection drops some
             # target columns and the RL predictor fits with N features but
             # predicts with N-k features — shape mismatch crash).
-            if cfg.training.extra_coins:
+            if cfg.training.extra_coins and not skip_fit:
+                # Multi-coin push only happens at fold 0 in train_once mode —
+                # subsequent folds skip both fit() and the multi-coin data
+                # update so the predictor keeps using its initial training set.
                 self._push_multi_coin_data_to_predictors(
                     predictors, cfg,
                     target_X=target_pre_X, target_y=target_pre_y,
@@ -841,7 +860,8 @@ class BenchmarkRunner:
                 )
 
             fold_results, fold_predictions = self._fit_eval_loop(
-                predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
+                predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te,
+                skip_fit=skip_fit,
             )
             # Capture this fold's trained instances for end-of-CV importance query.
             last_fold_predictors = predictors
