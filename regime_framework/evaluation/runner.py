@@ -636,9 +636,20 @@ class BenchmarkRunner:
                 f" (capped at {max_folds} via -k; data fits {est_folds_full})"
                 if max_folds and est_folds_full > est_folds else ""
             )
+            # Show RL-specific purge alongside the global one when "rl" is
+            # enabled and uses a smaller gap — global purge protects the
+            # train/test split for label-based predictors; RL gets a smaller
+            # effective gap because its reward is one-bar lookahead only.
+            rl_pb = getattr(cfg.split, "rl_purge_bars", None)
+            purge_str = f"{purge}"
+            if (
+                "rl" in (cfg.predictors.families or [])
+                and rl_pb is not None and rl_pb < purge
+            ):
+                purge_str = f"{purge} (rl={rl_pb})"
             console.print(
                 f"\n[bold]Rolling-window CV[/bold] — train={tw} bars, test={te} bars, "
-                f"step={step} bars, purge={purge}, est. {est_folds} folds{cap_note}"
+                f"step={step} bars, purge={purge_str}, est. {est_folds} folds{cap_note}"
             )
             split_iter = rolling_walk_forward_splits(
                 n=len(X),
