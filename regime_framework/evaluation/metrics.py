@@ -200,17 +200,19 @@ def time_above_bh(
     labels: np.ndarray,
     transaction_cost: float = 0.0,
 ) -> float:
-    """Fraction of bars where strategy equity is strictly above B&H equity.
+    """Fraction of bars where strategy equity is at or above B&H equity.
 
-    0–1 range. >0.5 = strategy spent most of the deployment ahead of
-    buy-and-hold. Robust to single-bar spikes; complements
-    `avg_excess_ratio` (magnitude) with a frequency view.
+    0–1 range. >0.5 = strategy spent most of the deployment at or ahead of
+    buy-and-hold. Uses >= rather than > so the t=0 bar (where strategy and
+    B&H are tied at closes[0]) counts toward "not underperforming". Robust
+    to single-bar spikes; complements `avg_excess_ratio` (magnitude) with
+    a frequency view.
     """
     closes = np.asarray(closes, dtype=np.float64)
     if len(closes) < 2:
         return float("nan")
     equity, _ = synth_equity_curve(closes, labels, transaction_cost=transaction_cost)
-    return float((equity > closes).mean())
+    return float((equity >= closes).mean())
 
 
 def calmar_ratio(total_gain: float, max_dd: float) -> float:

@@ -1355,7 +1355,7 @@ class BenchmarkRunner:
             "predictor", "family", "κ_mean", "κ_std", "dir-κ", "acc", "F1",
             "gain_mean", "gain_std", "gain_total",
             "Sharpe", "Calmar", "PF", "maxDD",
-            "avg_exc", "t>BH",
+            "avg_exc", "t≥BH",
             "+m", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
