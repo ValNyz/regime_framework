@@ -13,8 +13,6 @@ quote: USDT
 settle: USDT
 timeframe: 1h
 
-data_root: ~/regime_data
-
 training:
   extra_coins:
     - target: ETH
