@@ -172,6 +172,47 @@ def profit_factor(
     return pos / neg
 
 
+def avg_excess_ratio(
+    closes: np.ndarray,
+    labels: np.ndarray,
+    transaction_cost: float = 0.0,
+) -> float:
+    """Time-averaged outperformance of strategy vs buy-and-hold.
+
+    Equation:  mean over t of (eq_strategy[t] / closes[t] - 1)
+
+    Captures path-dependent outperformance — a strategy that ends at +85%
+    but only crossed B&H late gives a small value; one consistently +85%
+    throughout gives a large value. Endpoint `synth_gain` only sees the
+    final bar; this captures the area between the strategy equity and
+    the B&H curve, normalized by time.
+    """
+    closes = np.asarray(closes, dtype=np.float64)
+    if len(closes) < 2:
+        return float("nan")
+    equity, _ = synth_equity_curve(closes, labels, transaction_cost=transaction_cost)
+    # closes already starts at closes[0] = synth-equity start, so B&H equity == closes.
+    return float((equity / np.maximum(closes, 1e-12) - 1.0).mean())
+
+
+def time_above_bh(
+    closes: np.ndarray,
+    labels: np.ndarray,
+    transaction_cost: float = 0.0,
+) -> float:
+    """Fraction of bars where strategy equity is strictly above B&H equity.
+
+    0–1 range. >0.5 = strategy spent most of the deployment ahead of
+    buy-and-hold. Robust to single-bar spikes; complements
+    `avg_excess_ratio` (magnitude) with a frequency view.
+    """
+    closes = np.asarray(closes, dtype=np.float64)
+    if len(closes) < 2:
+        return float("nan")
+    equity, _ = synth_equity_curve(closes, labels, transaction_cost=transaction_cost)
+    return float((equity > closes).mean())
+
+
 def calmar_ratio(total_gain: float, max_dd: float) -> float:
     """Calmar = total_gain / |max_dd|. Risk-adjusted return per unit of pain.
 

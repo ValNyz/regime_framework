@@ -186,6 +186,7 @@ def _plot_A(df, runs, out_path, title_suffix: str, split_dt=None, labels=None,
 def _plot_B(
     df, raw_labels, smooth, runs, out_path, title_suffix: str, split_dt=None,
     xlim_dates: tuple | None = None,
+    transaction_cost: float = 0.0,
 ) -> None:
     """raw_labels drive the equity curve (matches the synth_gain metric);
     smooth drives the colored regime bands (visual only). Earlier code used
@@ -195,7 +196,7 @@ def _plot_B(
     from ..evaluation.metrics import synth_equity_curve
     dates = pd.to_datetime(df["date"].values)
     closes = df["close"].values
-    synth_eq, _ = synth_equity_curve(closes, raw_labels.values)
+    synth_eq, _ = synth_equity_curve(closes, raw_labels.values, transaction_cost=transaction_cost)
     # Rebase equity at the fold start (split_dt) — or at the visible window
     # start if no split_dt — so the curve reads naturally against the price
     # line on screen (instead of starting at the dataset's 2019 price level).
@@ -243,6 +244,7 @@ def plot_stitched_oos_equity(
     title_suffix: str,
     denoise_window: int = 168,
     fold_test_indices: list | None = None,
+    transaction_cost: float = 0.0,
 ) -> None:
     """Stitched OOS synth equity across CV folds — top-N predictors overlaid.
 
@@ -294,7 +296,7 @@ def plot_stitched_oos_equity(
             preds = fold["predictions"]
             if len(preds) == len(idx):
                 out.loc[idx] = preds
-        synth_eq, _ = synth_equity_curve(closes, out.values)
+        synth_eq, _ = synth_equity_curve(closes, out.values, transaction_cost=transaction_cost)
         synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor_dt)
         # Total gain over the stitched OOS span (last visible / first visible − 1).
         last_visible_pos = int(np.where(oos_slice)[0][-1])
@@ -338,6 +340,7 @@ def plot_synth_equity_multi(
     split_dt=None,
     denoise_window: int = 168,
     xlim_dates: tuple | None = None,
+    transaction_cost: float = 0.0,
 ) -> None:
     """Overlay synthetic regime-trader equity curves for multiple predictors.
 
@@ -366,7 +369,7 @@ def plot_synth_equity_multi(
             preds_arr = preds if isinstance(preds, np.ndarray) else np.asarray(preds)
             if sample_preds is None:
                 sample_preds = preds_arr
-            synth_eq, _ = synth_equity_curve(closes, preds_arr)
+            synth_eq, _ = synth_equity_curve(closes, preds_arr, transaction_cost=transaction_cost)
             synth_eq = _rebase_equity(synth_eq, closes, dates.values, anchor_dt)
             # Mask flat segments outside the prediction window for clean Y-axis.
             pred_mask = preds_arr != ""

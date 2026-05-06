@@ -1002,12 +1002,15 @@ class BenchmarkRunner:
             synth_gain_by_month, consistency_positive_months,
             sharpe_ratio, periods_per_year,
             synth_equity_curve, max_drawdown, profit_factor, calmar_ratio,
+            avg_excess_ratio, time_above_bh,
         )
         stitched_consistency: dict[str, tuple[int, int]] = {}
         stitched_sharpe: dict[str, float] = {}
         stitched_calmar: dict[str, float] = {}
         stitched_pf: dict[str, float] = {}
         stitched_max_dd: dict[str, float] = {}
+        stitched_avg_excess: dict[str, float] = {}
+        stitched_time_above_bh: dict[str, float] = {}
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
             ppy = periods_per_year(cfg.timeframe)
@@ -1059,6 +1062,16 @@ class BenchmarkRunner:
                 stitched_pf[pname] = profit_factor(
                     closes_concat, preds_concat, transaction_cost=cost,
                 )
+                # Path-dependent outperformance vs B&H — captures the area
+                # between strategy equity and the price curve, normalized
+                # by deployment length, plus the fraction of bars spent
+                # above B&H. Endpoint `gain_total` only sees the final bar.
+                stitched_avg_excess[pname] = avg_excess_ratio(
+                    closes_concat, preds_concat, transaction_cost=cost,
+                )
+                stitched_time_above_bh[pname] = time_above_bh(
+                    closes_concat, preds_concat, transaction_cost=cost,
+                )
 
         self._print_cv_summary(
             per_fold_df, mode, cfg=cfg,
@@ -1067,6 +1080,8 @@ class BenchmarkRunner:
             stitched_calmar=stitched_calmar,
             stitched_pf=stitched_pf,
             stitched_max_dd=stitched_max_dd,
+            stitched_avg_excess=stitched_avg_excess,
+            stitched_time_above_bh=stitched_time_above_bh,
         )
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
@@ -1109,6 +1124,7 @@ class BenchmarkRunner:
                     df, folds_per_predictor,
                     PLOTS_DIR / f"B_stitched_oos_{mode}.png",
                     title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{rank_by}",
+                    transaction_cost=cfg.predictors.evaluation_transaction_cost,
                 )
                 rank_str = {"kappa": "mean κ", "dir_kappa": "dir-κ", "gain": "gain_total", "vs_bh": "vs_BH"}.get(rank_by, "mean κ")
                 top_summary = ", ".join(
@@ -1222,6 +1238,8 @@ class BenchmarkRunner:
         stitched_calmar: dict[str, float] | None = None,
         stitched_pf: dict[str, float] | None = None,
         stitched_max_dd: dict[str, float] | None = None,
+        stitched_avg_excess: dict[str, float] | None = None,
+        stitched_time_above_bh: dict[str, float] | None = None,
     ) -> None:
         from .metrics import compound_returns
 
@@ -1274,6 +1292,14 @@ class BenchmarkRunner:
             agg["max_dd_min"] = agg["predictor"].map(
                 lambda n: stitched_max_dd.get(n, float("nan"))
             )
+        # Path-dependent outperformance vs B&H. NaN-fill rather than
+        # column-skip so the table layout stays consistent.
+        agg["avg_excess"] = agg["predictor"].map(
+            lambda n: (stitched_avg_excess or {}).get(n, float("nan"))
+        )
+        agg["time_above_bh"] = agg["predictor"].map(
+            lambda n: (stitched_time_above_bh or {}).get(n, float("nan"))
+        )
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
         bh_per_fold = per_fold.drop_duplicates("fold").set_index("fold").get(
@@ -1309,7 +1335,9 @@ class BenchmarkRunner:
         for col in (
             "predictor", "family", "κ_mean", "κ_std", "dir-κ", "acc", "F1",
             "gain_mean", "gain_std", "gain_total",
-            "Sharpe", "Calmar", "PF", "maxDD", "+m", "n_folds",
+            "Sharpe", "Calmar", "PF", "maxDD",
+            "avg_exc", "t>BH",
+            "+m", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
 
@@ -1321,7 +1349,9 @@ class BenchmarkRunner:
             f"[dim]{bh_mean*100:+.1f}%[/dim]",
             bh_std_str,
             f"[dim]{bh_total*100:+.1f}%[/dim]",
-            "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]",
+            "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]",
+            "[dim]0.0%[/dim]", "[dim]50.0%[/dim]",
+            "[dim]--[/dim]",
             f"[dim]{int(len(bh_per_fold))}[/dim]",
         )
 
@@ -1368,6 +1398,12 @@ class BenchmarkRunner:
                 pf_color = "green" if pf_v > 1.5 else ("yellow" if pf_v > 1.0 else "red")
             max_dd = float(r["max_dd_min"]) if not pd.isna(r["max_dd_min"]) else float("nan")
             dd_str = f"{max_dd*100:+.1f}%" if not np.isnan(max_dd) else "--"
+            avg_exc = float(r["avg_excess"]) if not pd.isna(r["avg_excess"]) else float("nan")
+            avg_exc_str = f"{avg_exc*100:+.1f}%" if not np.isnan(avg_exc) else "--"
+            avg_exc_color = "green" if avg_exc > 0.10 else ("yellow" if avg_exc > 0 else "red")
+            t_above = float(r["time_above_bh"]) if not pd.isna(r["time_above_bh"]) else float("nan")
+            t_above_str = f"{t_above*100:.1f}%" if not np.isnan(t_above) else "--"
+            t_above_color = "green" if t_above > 0.6 else ("yellow" if t_above > 0.5 else "red")
             n_pos = int(r["n_pos_months_sum"]) if not pd.isna(r["n_pos_months_sum"]) else 0
             n_tot = int(r["n_total_months_sum"]) if not pd.isna(r["n_total_months_sum"]) else 0
             cm_str = f"{n_pos}/{n_tot}" if n_tot else "0/0"
@@ -1383,6 +1419,8 @@ class BenchmarkRunner:
                 f"[{calmar_color}]{calmar_str}[/{calmar_color}]" if not np.isnan(calmar) else "--",
                 f"[{pf_color}]{pf_str}[/{pf_color}]" if pf_color else pf_str,
                 dd_str,
+                f"[{avg_exc_color}]{avg_exc_str}[/{avg_exc_color}]" if not np.isnan(avg_exc) else "--",
+                f"[{t_above_color}]{t_above_str}[/{t_above_color}]" if not np.isnan(t_above) else "--",
                 cm_str,
                 str(int(r["n_folds"])),
             )
@@ -1753,6 +1791,7 @@ class BenchmarkRunner:
                 PLOTS_DIR / f"B_multi_{mode}_fold{fold_id+1}.png",
                 suffix, split_dt,
                 xlim_dates=xlim_dates,
+                transaction_cost=cfg.predictors.evaluation_transaction_cost,
             )
             plot_regime_step_multi(
                 df, preds_dict,
