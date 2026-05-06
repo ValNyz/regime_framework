@@ -1,0 +1,66 @@
+target: BTC
+venue: binance
+quote: USDT
+settle: USDT          # ignored for spot, kept for symmetry
+timeframe: 1h
+market_type: spot     # path layout: data_root/binance/BTC_USDT-1h.feather
+                      # long-only metrics: sign[bear]=0 in gains/Sharpe/DD/PF/avg_exc/t>=BH
+
+split:
+  cv_mode: rolling
+  train_window_bars: 8640
+  test_window_bars: 730
+  retrain_every: 1
+
+features:
+  use_technical: true
+  use_external: true        # cross-asset (ETH OHLCV) + macro (DXY/VIX) still apply on spot
+  use_funding: false        # no funding rates on spot — disable explicitly
+  use_trading_signals: true
+  trading_signals_yaml: /home/portainer/workspace/crypto_comparative_analysis/configs/signals_btc_opt_OOS_2026.yaml
+  drop_nan_rows: true
+
+plots:
+  enabled: true
+  per_fold: false
+
+predictors:
+  families: [rl, classical]
+  feature_importance: false
+  include_finetune: true
+  include_ensemble: true
+  ensemble_groups:
+    - name: lr_rf
+      bases: [LogReg, RandomForest]
+
+  rl:
+    total_timesteps: 100000
+    action_spaces: [discrete-2, discrete-3]
+    nn_learning_rate: 5e-4
+    nn_buffer_size: 50000
+    nn_gamma: 0.99
+    nn_net_arch: [64, 32]
+    nn_verbose: 0
+    linear_learning_rate: 2e-3
+    linear_gamma: 0.9
+    linear_epsilon_start: 1.0
+    linear_epsilon_end: 0.05
+    lgb_n_estimators: 200
+    lgb_max_depth: 6
+    lgb_learning_rate: 0.05
+    lgb_gamma: 0.99
+    lgb_iterations: 30
+    ridge_iterations: 30
+    cat_iterations: 30
+
+  disabled:
+    [
+      LGB-FQI-2, Cat-FQI-2, DQN-2, RF-FQI-2, XGB-FQI-2,
+      Ridge-FQI-2, Huber-FQI-2, HistGB-FQI-2,
+      LGB-FQI-3, Cat-FQI-3, DQN-3, RF-FQI-3, XGB-FQI-3,
+      Ridge-FQI-3, Huber-FQI-3, HistGB-FQI-3,
+      ExtraTrees, ExtraTrees-FT, LightGBM, LightGBM-FT,
+      MLP, MLP-FT, XGBoost, XGBoost-FT,
+    ]
+
+seed: 42

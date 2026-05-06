@@ -18,6 +18,7 @@ def _strategy_log_returns(
     closes: np.ndarray,
     labels: np.ndarray,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> np.ndarray:
     """Per-step strategy log returns net of transaction cost.
 
@@ -27,16 +28,23 @@ def _strategy_log_returns(
     exit, or flip). Initial position assumed flat (0); first bar's cost
     is charged for the entry move from 0 to sign[0].
 
-    Used by synth_equity_curve, sharpe_ratio, synth_gain_by_month — single
-    source of truth for cost-adjusted strategy returns. Set
-    transaction_cost=0 to get the original cost-blind series.
+    long_only: when True (e.g. spot market), bear labels translate to flat
+    (sign = 0) instead of -1, since shorts aren't realizable on spot. All
+    gain / risk metrics computed downstream then reflect a long-or-flat
+    strategy that matches what could actually be deployed.
+
+    Used by synth_equity_curve, sharpe_ratio, synth_gain_by_month, and
+    everything in evaluate() — single source of truth for cost-adjusted
+    strategy returns.
     """
     closes = np.asarray(closes, dtype=np.float64)
     labels_arr = np.asarray(labels)
     log_ret_rel = np.log(closes[1:] / closes[:-1])               # length n-1
     sign = np.zeros(len(labels_arr), dtype=np.float64)
     sign[labels_arr == "bull"] = +1.0
-    sign[labels_arr == "bear"] = -1.0
+    if not long_only:
+        sign[labels_arr == "bear"] = -1.0
+    # else: sign[bear] stays 0 → long-or-flat strategy
     strategy_log_ret = sign[:-1] * log_ret_rel                   # length n-1
     if transaction_cost > 0:
         position_change = np.abs(np.diff(sign, prepend=0.0))     # length n
@@ -48,6 +56,7 @@ def synth_equity_curve(
     closes: np.ndarray,
     labels: np.ndarray,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> tuple[np.ndarray, float]:
     """Compute the long-bull / short-bear / flat-else synth-equity curve.
 
@@ -72,7 +81,7 @@ def synth_equity_curve(
     if len(closes) < 2:
         zero_eq = np.full(len(closes), float(closes[0]) if len(closes) else 0.0)
         return zero_eq, 0.0
-    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost)
+    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost, long_only=long_only)
     cum_log = np.zeros(len(closes))
     cum_log[1:] = np.cumsum(strategy_log_ret)
     equity = np.exp(cum_log) * float(closes[0])
@@ -120,17 +129,18 @@ def sharpe_ratio(
     labels: np.ndarray,
     periods_per_year: int = 24 * 365,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> float:
     """Annualized Sharpe of the synth strategy (long-bull / short-bear / flat).
 
     Sharpe = mean(strategy_log_ret) / std(strategy_log_ret) * sqrt(ppy).
     Risk-free rate assumed 0. transaction_cost (default 0) is deducted on
-    every position change. Same no-look-ahead semantics as synth_equity_curve.
+    every position change. long_only=True restricts to long-or-flat.
     """
     closes = np.asarray(closes, dtype=np.float64)
     if len(closes) < 3:
         return float("nan")
-    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost)
+    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost, long_only=long_only)
     sd = float(np.std(strategy_log_ret, ddof=1))
     if sd <= 1e-12:
         return float("nan")
@@ -155,14 +165,18 @@ def profit_factor(
     closes: np.ndarray,
     labels: np.ndarray,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> float:
     """sum(positive strategy returns) / |sum(negative strategy returns)|.
 
     Classic trading metric. >1 = profitable, >1.5 = decent edge, >2 = strong.
     Robust to outliers compared to win-rate. Returns +inf when there are
-    only winners, NaN when no trades.
+    only winners, NaN when no trades. long_only=True restricts to long-or-flat.
     """
-    log_ret = _strategy_log_returns(np.asarray(closes, dtype=np.float64), labels, transaction_cost)
+    log_ret = _strategy_log_returns(
+        np.asarray(closes, dtype=np.float64), labels, transaction_cost,
+        long_only=long_only,
+    )
     if len(log_ret) == 0:
         return float("nan")
     pos = float(log_ret[log_ret > 0].sum())
@@ -176,22 +190,19 @@ def avg_excess_ratio(
     closes: np.ndarray,
     labels: np.ndarray,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> float:
     """Time-averaged outperformance of strategy vs buy-and-hold.
 
     Equation:  mean over t of (eq_strategy[t] / closes[t] - 1)
-
-    Captures path-dependent outperformance — a strategy that ends at +85%
-    but only crossed B&H late gives a small value; one consistently +85%
-    throughout gives a large value. Endpoint `synth_gain` only sees the
-    final bar; this captures the area between the strategy equity and
-    the B&H curve, normalized by time.
+    long_only=True restricts to long-or-flat (spot markets).
     """
     closes = np.asarray(closes, dtype=np.float64)
     if len(closes) < 2:
         return float("nan")
-    equity, _ = synth_equity_curve(closes, labels, transaction_cost=transaction_cost)
-    # closes already starts at closes[0] = synth-equity start, so B&H equity == closes.
+    equity, _ = synth_equity_curve(
+        closes, labels, transaction_cost=transaction_cost, long_only=long_only,
+    )
     return float((equity / np.maximum(closes, 1e-12) - 1.0).mean())
 
 
@@ -199,19 +210,19 @@ def time_above_bh(
     closes: np.ndarray,
     labels: np.ndarray,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> float:
     """Fraction of bars where strategy equity is at or above B&H equity.
 
     0–1 range. >0.5 = strategy spent most of the deployment at or ahead of
-    buy-and-hold. Uses >= rather than > so the t=0 bar (where strategy and
-    B&H are tied at closes[0]) counts toward "not underperforming". Robust
-    to single-bar spikes; complements `avg_excess_ratio` (magnitude) with
-    a frequency view.
+    buy-and-hold. long_only=True restricts to long-or-flat.
     """
     closes = np.asarray(closes, dtype=np.float64)
     if len(closes) < 2:
         return float("nan")
-    equity, _ = synth_equity_curve(closes, labels, transaction_cost=transaction_cost)
+    equity, _ = synth_equity_curve(
+        closes, labels, transaction_cost=transaction_cost, long_only=long_only,
+    )
     return float((equity >= closes).mean())
 
 
@@ -297,16 +308,18 @@ def synth_gain_by_month(
     labels: np.ndarray,
     dates: np.ndarray | pd.Series,
     transaction_cost: float = 0.0,
+    long_only: bool = False,
 ) -> dict[str, float]:
     """Per-calendar-month synth_gain. Returns {YYYY-MM: fractional_return}.
 
     Same no-look-ahead semantics as synth_equity_curve. transaction_cost
     (default 0) is deducted on every position change before bucketing.
+    long_only=True restricts to long-or-flat (spot markets).
     """
     closes = np.asarray(closes, dtype=np.float64)
     if len(closes) < 2:
         return {}
-    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost)
+    strategy_log_ret = _strategy_log_returns(closes, labels, transaction_cost, long_only=long_only)
 
     months = pd.to_datetime(dates[:-1]).to_period("M").astype(str)
     df = pd.DataFrame({"month": months, "s": strategy_log_ret})
@@ -323,6 +336,7 @@ def evaluate(
     dates: np.ndarray | pd.Series | None = None,
     timeframe: str = "1h",
     transaction_cost: float = 0.0,
+    long_only: bool = False,
     metadata: dict | None = None,
 ) -> PredictionResult:
     """Compute the standard regime classification metrics + synth gain.
@@ -375,7 +389,7 @@ def evaluate(
         closes_arr = np.asarray(closes)
         closes_f = closes_arr[mask]
         equity, synth_gain = synth_equity_curve(
-            closes_f, y_pred_f, transaction_cost=transaction_cost,
+            closes_f, y_pred_f, transaction_cost=transaction_cost, long_only=long_only,
         )
         # Directional kappa: agreement between prediction and next-bar return
         # sign. Computed on raw (unmasked) y_pred so we use all bars where the
@@ -385,17 +399,20 @@ def evaluate(
         ppy = periods_per_year(timeframe)
         sharpe = sharpe_ratio(
             closes_f, y_pred_f, periods_per_year=ppy,
-            transaction_cost=transaction_cost,
+            transaction_cost=transaction_cost, long_only=long_only,
         )
         max_dd_v = max_drawdown(equity)
         calmar = calmar_ratio(synth_gain, max_dd_v)
-        pf = profit_factor(closes_f, y_pred_f, transaction_cost=transaction_cost)
+        pf = profit_factor(
+            closes_f, y_pred_f, transaction_cost=transaction_cost, long_only=long_only,
+        )
         # Consistency: needs dates, masked the same way
         if dates is not None and len(dates) == len(y_pred):
             dates_arr = np.asarray(dates)
             dates_f = dates_arr[mask]
             monthly = synth_gain_by_month(
-                closes_f, y_pred_f, dates_f, transaction_cost=transaction_cost,
+                closes_f, y_pred_f, dates_f,
+                transaction_cost=transaction_cost, long_only=long_only,
             )
             n_pos_months, n_total_months = consistency_positive_months(monthly)
 

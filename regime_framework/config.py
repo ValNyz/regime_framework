@@ -59,6 +59,8 @@ class DataPaths:
         cross_target: str | None = None,
         cross_quote: str | None = None,
         cross_settle: str | None = None,
+        cross_market_type: str | None = None,
+        cross_venue: str | None = None,
     ) -> "DataPaths":
         from .data.conventions import DataRoot
         root = DataRoot(
@@ -69,12 +71,14 @@ class DataPaths:
             cross_target=cross_target,
             cross_quote=cross_quote,
             cross_settle=cross_settle,
+            cross_market_type=cross_market_type,
+            cross_venue=cross_venue,
         )
         return cls(
             ohlcv=root.ohlcv(),
             funding=root.funding(),
-            cross_ohlcv=root.cross_ohlcv(),
-            cross_name=root.cross_name(),
+            cross_ohlcv=root.cross_ohlcv(),               # may be None when cross is opt-out
+            cross_name=root.cross_name() or "cross",      # placeholder when no cross set
             external_dir=root.external_dir(),
         )
 
@@ -184,6 +188,29 @@ class ExtraCoinSpec:
 class TrainingConfig:
     extra_coins: list[ExtraCoinSpec] = field(default_factory=list)
     add_coin_id_feature: bool = True
+
+
+@dataclass
+class CrossAssetSpec:
+    """One additional cross-asset to read as side-channel features.
+
+    Different from ExtraCoinSpec: extra coins are STACKED into the training
+    rows (more samples), cross assets are merged side-by-side as additional
+    feature columns aligned to the target's bars.
+
+    Each entry produces ~13 features prefixed with `<name>_` (or lowercase
+    target if `name` omitted): rolling returns, vol, EMA-distance, ratio
+    vs target, and rolling correlation with target log-returns.
+
+    Fields default to the run's root values when None, so the minimal entry
+    is just `- target: SOL`.
+    """
+    target: str
+    venue: str | None = None
+    quote: str | None = None
+    settle: str | None = None
+    market_type: str | None = None
+    name: str | None = None              # feature prefix; defaults to target.lower()
 
 
 @dataclass
@@ -393,6 +420,7 @@ class RunConfig:
     split: SplitConfig = field(default_factory=SplitConfig)
     predictors: PredictorConfig = field(default_factory=PredictorConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    cross_assets: list[CrossAssetSpec] = field(default_factory=list)  # multi-cross side-channel features
     plots: PlotConfig = field(default_factory=PlotConfig)
     seed: int = 42
 
@@ -457,6 +485,8 @@ class RunConfig:
                 cross_target=cross.get("target"),
                 cross_quote=cross.get("quote"),
                 cross_settle=cross.get("settle"),
+                cross_market_type=cross.get("market_type"),
+                cross_venue=cross.get("venue"),
             )
         else:
             # Explicit paths block (legacy / override mode)
@@ -496,6 +526,18 @@ class RunConfig:
             add_coin_id_feature=bool(train_block.get("add_coin_id_feature", True)),
         )
 
+        # Parse cross_assets (multi-cross side-channel features)
+        cross_specs: list[CrossAssetSpec] = []
+        for ca in (data.get("cross_assets") or []):
+            cross_specs.append(CrossAssetSpec(
+                target=ca["target"],
+                venue=ca.get("venue"),
+                quote=ca.get("quote"),
+                settle=ca.get("settle"),
+                market_type=ca.get("market_type"),
+                name=ca.get("name"),
+            ))
+
         return cls(
             target=target,
             venue=venue,
@@ -510,6 +552,7 @@ class RunConfig:
             split=SplitConfig(**data.get("split", {})),
             predictors=PredictorConfig(**_extract_predictor_kwargs(data.get("predictors", {}))),
             training=training_cfg,
+            cross_assets=cross_specs,
             plots=PlotConfig(**data.get("plots", {})),
             seed=data.get("seed", 42),
         )

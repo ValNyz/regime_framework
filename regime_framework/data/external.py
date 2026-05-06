@@ -26,11 +26,42 @@ DEFAULT_FILES = {
 }
 
 
+def _add_cross_features(
+    feat: pd.DataFrame,
+    df: pd.DataFrame,
+    cross_path: Path,
+    cross_name: str,
+) -> None:
+    """Append the standard ~13 cross-asset features for one reference coin."""
+    cross = load_parquet_or_feather(cross_path)
+    merged = merge_no_lookahead(
+        df, cross,
+        {"close": "_xc", "high": "_xh", "low": "_xl"},
+    )
+    cc = merged["_xc"]
+    cross_log_ret = np.log(cc / cc.shift(1))
+    for h in (5, 24, 72, 168, 720):
+        feat[f"{cross_name}_ret_{h}"] = cc.pct_change(h).values
+    for w in (24, 72, 168):
+        feat[f"{cross_name}_vol_{w}"] = (cross_log_ret.rolling(w).std() * np.sqrt(w)).values
+    for w in (50, 200):
+        ema = cc.ewm(span=w, adjust=False).mean()
+        feat[f"{cross_name}_dist_ema_{w}"] = (cc / ema - 1).values
+    feat[f"target_{cross_name}_ratio"] = (df["close"].values / cc.values)
+    ratio = pd.Series(feat[f"target_{cross_name}_ratio"], index=df.index)
+    feat[f"target_{cross_name}_ratio_ret_24"] = ratio.pct_change(24).values
+    feat[f"target_{cross_name}_ratio_ret_168"] = ratio.pct_change(168).values
+    target_log_ret = np.log(df["close"] / df["close"].shift(1))
+    feat[f"target_{cross_name}_corr_72"] = target_log_ret.rolling(72).corr(cross_log_ret).values
+    feat[f"target_{cross_name}_corr_168"] = target_log_ret.rolling(168).corr(cross_log_ret).values
+
+
 def load_external_features(
     df: pd.DataFrame,
     external_dir: Path | None,
     cross_ohlcv_path: Path | None = None,
     cross_name: str = "cross",
+    extra_cross_paths: list[tuple[Path, str]] | None = None,
 ) -> pd.DataFrame:
     """Compute external feature matrix aligned to df (cross-asset + macro).
 
@@ -39,6 +70,9 @@ def load_external_features(
         external_dir: directory containing macro files (FNG, ETF, DXY, VIX)
         cross_ohlcv_path: cross-asset OHLCV reference for relative-strength features
         cross_name: prefix-friendly name for the cross asset (eth, btc, ...)
+        extra_cross_paths: optional list of (path, name) tuples — each adds the
+            same ~13 features under its own prefix. Used by the multi-cross
+            mechanism (cross_assets: in YAML).
 
     All features are past-only by construction. Funding-rate features
     (target / BTC / ETH) live in their own category — see
@@ -49,29 +83,24 @@ def load_external_features(
     # ----- Cross-asset OHLCV (relative strength + correlation) -----
     if cross_ohlcv_path is not None and cross_ohlcv_path.exists():
         try:
-            cross = load_parquet_or_feather(cross_ohlcv_path)
-            merged = merge_no_lookahead(
-                df, cross,
-                {"close": "_xc", "high": "_xh", "low": "_xl"},
-            )
-            cc = merged["_xc"]
-            cross_log_ret = np.log(cc / cc.shift(1))
-            for h in (5, 24, 72, 168, 720):
-                feat[f"{cross_name}_ret_{h}"] = cc.pct_change(h).values
-            for w in (24, 72, 168):
-                feat[f"{cross_name}_vol_{w}"] = (cross_log_ret.rolling(w).std() * np.sqrt(w)).values
-            for w in (50, 200):
-                ema = cc.ewm(span=w, adjust=False).mean()
-                feat[f"{cross_name}_dist_ema_{w}"] = (cc / ema - 1).values
-            feat[f"target_{cross_name}_ratio"] = (df["close"].values / cc.values)
-            ratio = pd.Series(feat[f"target_{cross_name}_ratio"], index=df.index)
-            feat[f"target_{cross_name}_ratio_ret_24"] = ratio.pct_change(24).values
-            feat[f"target_{cross_name}_ratio_ret_168"] = ratio.pct_change(168).values
-            target_log_ret = np.log(df["close"] / df["close"].shift(1))
-            feat[f"target_{cross_name}_corr_72"] = target_log_ret.rolling(72).corr(cross_log_ret).values
-            feat[f"target_{cross_name}_corr_168"] = target_log_ret.rolling(168).corr(cross_log_ret).values
+            _add_cross_features(feat, df, cross_ohlcv_path, cross_name)
         except Exception as e:
             print(f"  WARN: cross asset OHLCV skipped: {e}")
+
+    # ----- Multi-cross side-channel features -----
+    seen_names = {cross_name}
+    for path, name in (extra_cross_paths or []):
+        if name in seen_names:
+            print(f"  WARN: extra cross '{name}' duplicates an existing prefix — skipped")
+            continue
+        if not path.exists():
+            print(f"  WARN: extra cross missing, skipped: {path}")
+            continue
+        try:
+            _add_cross_features(feat, df, path, name)
+            seen_names.add(name)
+        except Exception as e:
+            print(f"  WARN: extra cross '{name}' skipped: {e}")
 
     if external_dir is None or not external_dir.exists():
         return feat

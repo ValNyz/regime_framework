@@ -43,6 +43,50 @@ from .splits import (
 console = Console()
 
 
+def _resolve_extra_cross_paths(
+    cfg: RunConfig,
+    root_override: "DataRoot | None" = None,
+) -> list[tuple[Path, str]]:
+    """Resolve cfg.cross_assets to (path, name) tuples for the FeaturePipeline.
+
+    Each spec defaults missing fields to the run's root values (venue, quote,
+    settle, market_type) so the minimal entry is `- target: SOL`. Names default
+    to `target.lower()`. Missing files are reported by the loader, not here.
+    """
+    specs = getattr(cfg, "cross_assets", None) or []
+    if not specs:
+        return []
+    if cfg.data_root is None:
+        console.print(
+            "[yellow]cross_assets: ignored — set `data_root:` to resolve paths.[/yellow]"
+        )
+        return []
+    if root_override is not None:
+        base = root_override
+    else:
+        base = DataRoot(
+            data_root=cfg.data_root,
+            venue=cfg.venue,
+            target=cfg.target,
+            quote=cfg.quote,
+            settle=cfg.settle,
+            timeframe=cfg.timeframe,
+            market_type=cfg.market_type,
+        )
+    out: list[tuple[Path, str]] = []
+    for spec in specs:
+        path = base.extra_cross_ohlcv(
+            target=spec.target,
+            quote=spec.quote,
+            settle=spec.settle,
+            market_type=spec.market_type,
+            venue=spec.venue,
+        )
+        name = (spec.name or spec.target).lower()
+        out.append((path, name))
+    return out
+
+
 def _has_native_importance(predictor: BasePredictor) -> bool:
     """True iff predictor exposes cheap, native feature importance.
 
@@ -326,6 +370,7 @@ class BenchmarkRunner:
 
         # ----- 4. Features -----
         console.print("[bold]Computing features[/bold]")
+        extra_cross_paths = _resolve_extra_cross_paths(cfg)
         pipeline = FeaturePipeline(
             use_technical=cfg.features.use_technical,
             use_external=cfg.features.use_external,
@@ -336,6 +381,7 @@ class BenchmarkRunner:
             target_funding_path=cfg.paths.funding,
             cross_ohlcv_path=cfg.paths.cross_ohlcv,
             cross_name=cfg.paths.cross_name,
+            extra_cross_paths=extra_cross_paths,
             external_dir=cfg.paths.external_dir,
             drop_nan_rows=cfg.features.drop_nan_rows,
         )
@@ -509,6 +555,8 @@ class BenchmarkRunner:
         # Close prices for synth_gain — passed once per fold; aligned to y_te.
         closes_te = np.asarray(df_te["close"].values, dtype=np.float64) if "close" in df_te.columns else None
 
+        long_only = (getattr(self.cfg, "market_type", "futures") == "spot")
+
         def _evaluate(predictor, pred_arr, t0):
             res = evaluate(
                 name=predictor.name,
@@ -519,6 +567,7 @@ class BenchmarkRunner:
                 dates=np.asarray(d_te.values) if d_te is not None else None,
                 timeframe=self.cfg.timeframe,
                 transaction_cost=self.cfg.predictors.evaluation_transaction_cost,
+                long_only=long_only,
                 metadata={"elapsed_sec": round(time.time() - t0, 2)},
             )
             results.append(res)
@@ -1015,6 +1064,7 @@ class BenchmarkRunner:
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
             ppy = periods_per_year(cfg.timeframe)
+            stitched_long_only = (getattr(cfg, "market_type", "futures") == "spot")
             all_pred_names: set[str] = set()
             for fp in all_fold_preds:
                 all_pred_names.update(fp["predictions"].keys())
@@ -1036,7 +1086,8 @@ class BenchmarkRunner:
                 if len(preds_concat) != len(closes_concat):
                     continue
                 monthly = synth_gain_by_month(
-                    closes_concat, preds_concat, dates_concat, transaction_cost=cost,
+                    closes_concat, preds_concat, dates_concat,
+                    transaction_cost=cost, long_only=stitched_long_only,
                 )
                 stitched_consistency[pname] = consistency_positive_months(monthly)
                 # Stitched Sharpe: ONE estimate over all concatenated OOS bars
@@ -1047,6 +1098,7 @@ class BenchmarkRunner:
                 stitched_sharpe[pname] = sharpe_ratio(
                     closes_concat, preds_concat,
                     periods_per_year=ppy, transaction_cost=cost,
+                    long_only=stitched_long_only,
                 )
                 # Stitched DD over the full concatenated equity curve. Used
                 # for Calmar AND replaces the maxDD column (which was the
@@ -1054,7 +1106,8 @@ class BenchmarkRunner:
                 # internally inconsistent: a strategy could show maxDD=-14%
                 # while Calmar = gain/|stitched_dd| reflected -17%).
                 eq_concat, gain_concat = synth_equity_curve(
-                    closes_concat, preds_concat, transaction_cost=cost,
+                    closes_concat, preds_concat,
+                    transaction_cost=cost, long_only=stitched_long_only,
                 )
                 dd_concat = max_drawdown(eq_concat)
                 stitched_max_dd[pname] = dd_concat
@@ -1067,17 +1120,20 @@ class BenchmarkRunner:
                 stitched_gain[pname] = gain_concat
                 # Stitched Profit Factor over all OOS bars.
                 stitched_pf[pname] = profit_factor(
-                    closes_concat, preds_concat, transaction_cost=cost,
+                    closes_concat, preds_concat,
+                    transaction_cost=cost, long_only=stitched_long_only,
                 )
                 # Path-dependent outperformance vs B&H — captures the area
                 # between strategy equity and the price curve, normalized
                 # by deployment length, plus the fraction of bars spent
                 # above B&H. Endpoint `gain_total` only sees the final bar.
                 stitched_avg_excess[pname] = avg_excess_ratio(
-                    closes_concat, preds_concat, transaction_cost=cost,
+                    closes_concat, preds_concat,
+                    transaction_cost=cost, long_only=stitched_long_only,
                 )
                 stitched_time_above_bh[pname] = time_above_bh(
-                    closes_concat, preds_concat, transaction_cost=cost,
+                    closes_concat, preds_concat,
+                    transaction_cost=cost, long_only=stitched_long_only,
                 )
 
         self._print_cv_summary(
@@ -1133,6 +1189,7 @@ class BenchmarkRunner:
                     PLOTS_DIR / f"B_stitched_oos_{mode}.png",
                     title_suffix=f"{cfg.target}-{cfg.timeframe}-{mode}-{rank_by}",
                     transaction_cost=cfg.predictors.evaluation_transaction_cost,
+                    long_only=stitched_long_only,
                 )
                 rank_str = {"kappa": "mean κ", "dir_kappa": "dir-κ", "gain": "gain_total", "vs_bh": "vs_BH"}.get(rank_by, "mean κ")
                 top_summary = ", ".join(
@@ -1696,8 +1753,13 @@ class BenchmarkRunner:
             use_trading_signals=cfg.features.use_trading_signals,
             trading_signals_yaml=cfg.features.trading_signals_yaml,
             target_funding_path=root.funding() if root.funding().exists() else None,
-            cross_ohlcv_path=root.cross_ohlcv() if root.cross_ohlcv().exists() else None,
-            cross_name=root.cross_name(),
+            cross_ohlcv_path=(
+                root.cross_ohlcv()
+                if root.cross_ohlcv() is not None and root.cross_ohlcv().exists()
+                else None
+            ),
+            cross_name=root.cross_name() or "cross",
+            extra_cross_paths=_resolve_extra_cross_paths(cfg, root_override=root),
             external_dir=cfg.paths.external_dir,
             drop_nan_rows=cfg.features.drop_nan_rows,
         )
@@ -1813,6 +1875,7 @@ class BenchmarkRunner:
                 suffix, split_dt,
                 xlim_dates=xlim_dates,
                 transaction_cost=cfg.predictors.evaluation_transaction_cost,
+                long_only=(getattr(cfg, "market_type", "futures") == "spot"),
             )
             plot_regime_step_multi(
                 df, preds_dict,
@@ -1859,7 +1922,9 @@ class BenchmarkRunner:
             # _plot_B takes (raw_labels, smooth, runs) — raw drives the equity
             # curve (matches synth_gain metric), smooth drives the regime bands.
             _plot_B(df, out, smooth, runs, out_dir / f"B_pred_{mode}_fold{fold_id+1}.png",
-                    suffix, split_dt, xlim_dates=xlim_dates)
+                    suffix, split_dt, xlim_dates=xlim_dates,
+                    transaction_cost=cfg.predictors.evaluation_transaction_cost,
+                    long_only=(getattr(cfg, "market_type", "futures") == "spot"))
             console.print(
                 f"      [dim]plots saved: A/B_pred_{mode}_fold{fold_id+1}.png "
                 f"(predictor={best.name}, κ={best.kappa:+.3f})[/dim]"
