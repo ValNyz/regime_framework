@@ -13,9 +13,22 @@ timeframe: 1h
 # --- Where data lives (must be overridden by preset or per machine) ---
 data_root: ~/workspace/hyperliquid_data/user_data/data
 
-# Optional cross-asset override — defaults to DEFAULT_CROSS map (BTC→ETH, HYPE→BTC, ...)
+# Cross-asset side-channel features (opt-in, 0..N coins).
+# Accepts a dict (single coin) or a list of dicts (multi-coin).
+# Each entry inherits quote/settle/market_type/venue from root unless overridden.
+# Each entry produces ~13 features prefixed by `<target>_` (lowercase).
+#
+# Single coin (this preset):
+cross:
+  target: ETH
+#
+# Multi-coin example:
 # cross:
-#   target: SOL
+#   - target: ETH
+#   - target: SOL
+#   - target: BNB
+#     market_type: spot      # can mix futures target + spot cross
+#     quote: USDT
 
 # --- Labelling ---
 label:

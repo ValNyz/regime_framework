@@ -42,8 +42,6 @@ class DataPaths:
     """
     ohlcv: Path
     funding: Path | None = None
-    cross_ohlcv: Path | None = None
-    cross_name: str = "cross"
     external_dir: Path | None = None
 
     @classmethod
@@ -56,11 +54,6 @@ class DataPaths:
         settle: str,
         timeframe: str,
         market_type: str = "futures",
-        cross_target: str | None = None,
-        cross_quote: str | None = None,
-        cross_settle: str | None = None,
-        cross_market_type: str | None = None,
-        cross_venue: str | None = None,
     ) -> "DataPaths":
         from .data.conventions import DataRoot
         root = DataRoot(
@@ -68,17 +61,10 @@ class DataPaths:
             venue=venue, target=target, quote=quote, settle=settle,
             timeframe=timeframe,
             market_type=market_type,
-            cross_target=cross_target,
-            cross_quote=cross_quote,
-            cross_settle=cross_settle,
-            cross_market_type=cross_market_type,
-            cross_venue=cross_venue,
         )
         return cls(
             ohlcv=root.ohlcv(),
             funding=root.funding(),
-            cross_ohlcv=root.cross_ohlcv(),               # may be None when cross is opt-out
-            cross_name=root.cross_name() or "cross",      # placeholder when no cross set
             external_dir=root.external_dir(),
         )
 
@@ -192,7 +178,7 @@ class TrainingConfig:
 
 @dataclass
 class CrossAssetSpec:
-    """One additional cross-asset to read as side-channel features.
+    """One cross-asset to read as side-channel features.
 
     Different from ExtraCoinSpec: extra coins are STACKED into the training
     rows (more samples), cross assets are merged side-by-side as additional
@@ -211,6 +197,20 @@ class CrossAssetSpec:
     settle: str | None = None
     market_type: str | None = None
     name: str | None = None              # feature prefix; defaults to target.lower()
+
+
+def _parse_cross_spec(d: dict) -> CrossAssetSpec:
+    """Build a CrossAssetSpec from a YAML dict, raising on missing target."""
+    if "target" not in d:
+        raise ValueError(f"cross entry missing required `target:` field: {d!r}")
+    return CrossAssetSpec(
+        target=d["target"],
+        venue=d.get("venue"),
+        quote=d.get("quote"),
+        settle=d.get("settle"),
+        market_type=d.get("market_type"),
+        name=d.get("name"),
+    )
 
 
 @dataclass
@@ -420,7 +420,7 @@ class RunConfig:
     split: SplitConfig = field(default_factory=SplitConfig)
     predictors: PredictorConfig = field(default_factory=PredictorConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
-    cross_assets: list[CrossAssetSpec] = field(default_factory=list)  # multi-cross side-channel features
+    cross: list[CrossAssetSpec] = field(default_factory=list)  # cross-asset side-channel features (0..N coins)
     plots: PlotConfig = field(default_factory=PlotConfig)
     seed: int = 42
 
@@ -473,7 +473,6 @@ class RunConfig:
         if is_placeholder:
             paths_block = {}
         if data_root and not paths_block:
-            cross = data.get("cross", {}) or {}
             resolved_paths = DataPaths.from_data_root(
                 data_root=data_root,
                 venue=venue,
@@ -482,11 +481,6 @@ class RunConfig:
                 settle=data.get("settle", data.get("quote", "USDT")),
                 timeframe=timeframe,
                 market_type=data.get("market_type", "futures"),
-                cross_target=cross.get("target"),
-                cross_quote=cross.get("quote"),
-                cross_settle=cross.get("settle"),
-                cross_market_type=cross.get("market_type"),
-                cross_venue=cross.get("venue"),
             )
         else:
             # Explicit paths block (legacy / override mode)
@@ -497,8 +491,6 @@ class RunConfig:
             resolved_paths = DataPaths(
                 ohlcv=Path(paths_block["ohlcv"]).expanduser(),
                 funding=Path(paths_block["funding"]).expanduser() if paths_block.get("funding") else None,
-                cross_ohlcv=Path(paths_block["cross_ohlcv"]).expanduser() if paths_block.get("cross_ohlcv") else None,
-                cross_name=paths_block.get("cross_name", "cross"),
                 external_dir=Path(paths_block["external_dir"]).expanduser() if paths_block.get("external_dir") else None,
             )
         # Resolve trading_signals_yaml: if relative, resolve under CONFIG_DIR
@@ -526,17 +518,19 @@ class RunConfig:
             add_coin_id_feature=bool(train_block.get("add_coin_id_feature", True)),
         )
 
-        # Parse cross_assets (multi-cross side-channel features)
-        cross_specs: list[CrossAssetSpec] = []
-        for ca in (data.get("cross_assets") or []):
-            cross_specs.append(CrossAssetSpec(
-                target=ca["target"],
-                venue=ca.get("venue"),
-                quote=ca.get("quote"),
-                settle=ca.get("settle"),
-                market_type=ca.get("market_type"),
-                name=ca.get("name"),
-            ))
+        # Parse `cross:` — accepts a dict (one coin, legacy syntax) or a list
+        # of dicts (multi-coin). Both normalize to list[CrossAssetSpec].
+        cross_block = data.get("cross")
+        if cross_block is None:
+            cross_specs: list[CrossAssetSpec] = []
+        elif isinstance(cross_block, dict):
+            cross_specs = [_parse_cross_spec(cross_block)]
+        elif isinstance(cross_block, list):
+            cross_specs = [_parse_cross_spec(c) for c in cross_block]
+        else:
+            raise ValueError(
+                f"{source}: `cross:` must be a dict (single cross) or list of dicts; got {type(cross_block).__name__}"
+            )
 
         return cls(
             target=target,
@@ -552,7 +546,7 @@ class RunConfig:
             split=SplitConfig(**data.get("split", {})),
             predictors=PredictorConfig(**_extract_predictor_kwargs(data.get("predictors", {}))),
             training=training_cfg,
-            cross_assets=cross_specs,
+            cross=cross_specs,
             plots=PlotConfig(**data.get("plots", {})),
             seed=data.get("seed", 42),
         )

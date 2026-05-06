@@ -32,16 +32,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-# Cross-asset is now opt-in. Set `cross.target:` in the YAML to activate the
-# 13-feature relative-strength block; leave it unset for a target-only run.
-# (Previously this map auto-filled cross_target from the run's target —
-# silently injecting ETH/BTC features into every preset. Removed because it
-# made feature inventories non-obvious.)
+# Cross-asset is opt-in. Add a `cross:` block (dict for one coin, list for
+# many) in the YAML to activate the 13-feature relative-strength block per
+# cross. All cross specs go through DataRoot.coin_ohlcv() — there is no
+# longer a "primary" vs "extra" cross distinction.
 
 
 @dataclass
 class DataRoot:
-    """Root directory + venue/asset/timeframe → resolves all canonical paths.
+    """Root directory + venue/asset/timeframe -> resolves all canonical paths.
 
     Example:
         root = DataRoot(
@@ -50,10 +49,10 @@ class DataRoot:
             target="BTC", quote="USDT", settle="USDT",
             timeframe="1h",
         )
-        root.ohlcv()         # /data/binance/futures/BTC_USDT_USDT-1h-futures.feather
-        root.funding()       # /data/binance/futures/BTC_USDT_USDT-1h-funding_rate.feather
-        root.cross_ohlcv()   # /data/binance/futures/ETH_USDT_USDT-1h-futures.feather
-        root.external_dir()  # /data/external
+        root.ohlcv()              # /data/binance/futures/BTC_USDT_USDT-1h-futures.feather
+        root.funding()            # /data/binance/futures/BTC_USDT_USDT-1h-funding_rate.feather
+        root.coin_ohlcv("ETH")    # /data/binance/futures/ETH_USDT_USDT-1h-futures.feather
+        root.external_dir()       # /data/external
     """
     data_root: Path
     venue: str                    # "binance" | "hyperliquid"
@@ -62,26 +61,9 @@ class DataRoot:
     settle: str                   # usually same as quote (ignored for spot)
     timeframe: str                # "1h" | "30m" | ...
     market_type: str = "futures"  # "futures" | "spot" — controls path layout
-    cross_target: str | None = None             # auto-resolved if None
-    cross_quote: str | None = None              # defaults to quote
-    cross_settle: str | None = None             # defaults to settle
-    cross_market_type: str | None = None        # defaults to market_type (root)
-    cross_venue: str | None = None              # defaults to venue (root)
 
     def __post_init__(self) -> None:
         self.data_root = Path(self.data_root).expanduser()
-        # Cross fields are filled only when cross_target is explicitly provided.
-        # Leaving cross_target=None disables the historical cross block entirely
-        # (cross_ohlcv() returns None, cross_name() returns None).
-        if self.cross_target is not None:
-            if self.cross_quote is None:
-                self.cross_quote = self.quote
-            if self.cross_settle is None:
-                self.cross_settle = self.settle
-            if self.cross_market_type is None:
-                self.cross_market_type = self.market_type
-            if self.cross_venue is None:
-                self.cross_venue = self.venue
 
     # ---------------------------------------------------------------------
     def _venue_dir(self, venue: str, market_type: str) -> Path:
@@ -122,23 +104,7 @@ class DataRoot:
             self.venue, self.target, self.quote, self.settle, self.market_type,
         )
 
-    def cross_ohlcv(self) -> Path | None:
-        if self.cross_target is None:
-            return None
-        return self._ohlcv_path(
-            self.cross_venue or self.venue,
-            self.cross_target,
-            self.cross_quote or self.quote,
-            self.cross_settle or self.settle,
-            self.cross_market_type or self.market_type,
-        )
-
-    def cross_name(self) -> str | None:
-        if self.cross_target is None:
-            return None
-        return self.cross_target.lower()
-
-    def extra_cross_ohlcv(
+    def coin_ohlcv(
         self,
         target: str,
         quote: str | None = None,
@@ -146,11 +112,12 @@ class DataRoot:
         market_type: str | None = None,
         venue: str | None = None,
     ) -> Path:
-        """Resolve OHLCV path for an arbitrary additional cross asset.
+        """Resolve OHLCV path for an arbitrary cross-coin spec.
 
-        Defaults each field to the corresponding root value if unset, so
-        a CrossAssetSpec(target="SOL") in the YAML inherits venue/quote/
-        settle/market_type from the run config without restating them.
+        Each field defaults to the run's root value when unset, so the
+        minimal spec is just `target`. Used uniformly for every entry in
+        the unified `cross:` list — there is no longer a "primary" vs
+        "extra" distinction.
         """
         return self._ohlcv_path(
             venue or self.venue,
@@ -171,9 +138,6 @@ class DataRoot:
             warnings.append(f"OHLCV missing: {self.ohlcv()}")
         if not self.funding().exists():
             warnings.append(f"funding missing (skipped): {self.funding()}")
-        cross_path = self.cross_ohlcv()
-        if cross_path is not None and not cross_path.exists():
-            warnings.append(f"cross OHLCV missing (skipped): {cross_path}")
         if not self.external_dir().exists():
             warnings.append(f"external dir missing (skipped): {self.external_dir()}")
         return warnings

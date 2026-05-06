@@ -27,9 +27,7 @@ class FeaturePipeline:
     use_trading_signals: bool = False
     trading_signals_yaml: Path | None = None
     target_funding_path: Path | None = None
-    cross_ohlcv_path: Path | None = None
-    cross_name: str = "cross"
-    extra_cross_paths: list[tuple[Path, str]] | None = None
+    cross_paths: list[tuple[Path, str]] | None = None
     external_dir: Path | None = None
     drop_nan_rows: bool = True
 
@@ -59,16 +57,14 @@ class FeaturePipeline:
             ext = compute_external_features(
                 df,
                 external_dir=self.external_dir,
-                cross_ohlcv_path=self.cross_ohlcv_path,
-                cross_name=self.cross_name,
-                extra_cross_paths=self.extra_cross_paths,
+                cross_paths=self.cross_paths,
             )
             feats.append(ext)
             for c in ext.columns:
                 self.column_sources[c] = "external"
-            n_extra = len(self.extra_cross_paths) if self.extra_cross_paths else 0
-            extra_note = f" (+ {n_extra} cross_assets)" if n_extra else ""
-            print(f"  external:  {ext.shape[1]} features{extra_note}")
+            n_cross = len(self.cross_paths) if self.cross_paths else 0
+            cross_note = f" ({n_cross} cross-coins)" if n_cross else " (no cross)"
+            print(f"  external:  {ext.shape[1]} features{cross_note}")
 
         if self.use_funding:
             fnd = compute_funding_features(

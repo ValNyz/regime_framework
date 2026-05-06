@@ -43,22 +43,22 @@ from .splits import (
 console = Console()
 
 
-def _resolve_extra_cross_paths(
+def _resolve_cross_paths(
     cfg: RunConfig,
     root_override: "DataRoot | None" = None,
 ) -> list[tuple[Path, str]]:
-    """Resolve cfg.cross_assets to (path, name) tuples for the FeaturePipeline.
+    """Resolve cfg.cross (list of CrossAssetSpec) to (path, name) tuples.
 
     Each spec defaults missing fields to the run's root values (venue, quote,
     settle, market_type) so the minimal entry is `- target: SOL`. Names default
     to `target.lower()`. Missing files are reported by the loader, not here.
     """
-    specs = getattr(cfg, "cross_assets", None) or []
+    specs = getattr(cfg, "cross", None) or []
     if not specs:
         return []
     if cfg.data_root is None:
         console.print(
-            "[yellow]cross_assets: ignored — set `data_root:` to resolve paths.[/yellow]"
+            "[yellow]cross: ignored — set `data_root:` to resolve paths.[/yellow]"
         )
         return []
     if root_override is not None:
@@ -75,7 +75,7 @@ def _resolve_extra_cross_paths(
         )
     out: list[tuple[Path, str]] = []
     for spec in specs:
-        path = base.extra_cross_ohlcv(
+        path = base.coin_ohlcv(
             target=spec.target,
             quote=spec.quote,
             settle=spec.settle,
@@ -370,7 +370,6 @@ class BenchmarkRunner:
 
         # ----- 4. Features -----
         console.print("[bold]Computing features[/bold]")
-        extra_cross_paths = _resolve_extra_cross_paths(cfg)
         pipeline = FeaturePipeline(
             use_technical=cfg.features.use_technical,
             use_external=cfg.features.use_external,
@@ -379,9 +378,7 @@ class BenchmarkRunner:
             use_trading_signals=cfg.features.use_trading_signals,
             trading_signals_yaml=cfg.features.trading_signals_yaml,
             target_funding_path=cfg.paths.funding,
-            cross_ohlcv_path=cfg.paths.cross_ohlcv,
-            cross_name=cfg.paths.cross_name,
-            extra_cross_paths=extra_cross_paths,
+            cross_paths=_resolve_cross_paths(cfg),
             external_dir=cfg.paths.external_dir,
             drop_nan_rows=cfg.features.drop_nan_rows,
         )
@@ -1753,13 +1750,7 @@ class BenchmarkRunner:
             use_trading_signals=cfg.features.use_trading_signals,
             trading_signals_yaml=cfg.features.trading_signals_yaml,
             target_funding_path=root.funding() if root.funding().exists() else None,
-            cross_ohlcv_path=(
-                root.cross_ohlcv()
-                if root.cross_ohlcv() is not None and root.cross_ohlcv().exists()
-                else None
-            ),
-            cross_name=root.cross_name() or "cross",
-            extra_cross_paths=_resolve_extra_cross_paths(cfg, root_override=root),
+            cross_paths=_resolve_cross_paths(cfg, root_override=root),
             external_dir=cfg.paths.external_dir,
             drop_nan_rows=cfg.features.drop_nan_rows,
         )

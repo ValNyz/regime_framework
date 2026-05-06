@@ -59,20 +59,16 @@ def _add_cross_features(
 def load_external_features(
     df: pd.DataFrame,
     external_dir: Path | None,
-    cross_ohlcv_path: Path | None = None,
-    cross_name: str = "cross",
-    extra_cross_paths: list[tuple[Path, str]] | None = None,
+    cross_paths: list[tuple[Path, str]] | None = None,
 ) -> pd.DataFrame:
     """Compute external feature matrix aligned to df (cross-asset + macro).
 
     Args:
         df: main OHLCV frame (must have 'date' and 'close')
         external_dir: directory containing macro files (FNG, ETF, DXY, VIX)
-        cross_ohlcv_path: cross-asset OHLCV reference for relative-strength features
-        cross_name: prefix-friendly name for the cross asset (eth, btc, ...)
-        extra_cross_paths: optional list of (path, name) tuples — each adds the
-            same ~13 features under its own prefix. Used by the multi-cross
-            mechanism (cross_assets: in YAML).
+        cross_paths: list of (path, name) tuples — each adds ~13 cross-asset
+            features under its own prefix. Empty / None = no cross features
+            (target-only run).
 
     All features are past-only by construction. Funding-rate features
     (target / BTC / ETH) live in their own category — see
@@ -80,27 +76,20 @@ def load_external_features(
     """
     feat = pd.DataFrame(index=df.index)
 
-    # ----- Cross-asset OHLCV (relative strength + correlation) -----
-    if cross_ohlcv_path is not None and cross_ohlcv_path.exists():
-        try:
-            _add_cross_features(feat, df, cross_ohlcv_path, cross_name)
-        except Exception as e:
-            print(f"  WARN: cross asset OHLCV skipped: {e}")
-
-    # ----- Multi-cross side-channel features -----
-    seen_names = {cross_name}
-    for path, name in (extra_cross_paths or []):
+    # ----- Cross-asset OHLCV (relative strength + correlation), 0..N coins -----
+    seen_names: set[str] = set()
+    for path, name in (cross_paths or []):
         if name in seen_names:
-            print(f"  WARN: extra cross '{name}' duplicates an existing prefix — skipped")
+            print(f"  WARN: cross '{name}' duplicates an existing prefix - skipped")
             continue
         if not path.exists():
-            print(f"  WARN: extra cross missing, skipped: {path}")
+            print(f"  WARN: cross OHLCV missing, skipped: {path}")
             continue
         try:
             _add_cross_features(feat, df, path, name)
             seen_names.add(name)
         except Exception as e:
-            print(f"  WARN: extra cross '{name}' skipped: {e}")
+            print(f"  WARN: cross '{name}' skipped: {e}")
 
     if external_dir is None or not external_dir.exists():
         return feat
