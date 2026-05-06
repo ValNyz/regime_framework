@@ -1665,6 +1665,7 @@ class BenchmarkRunner:
         quote = coin.quote or cfg.quote
         settle = coin.settle or cfg.settle
         timeframe = coin.timeframe or cfg.timeframe
+        market_type = coin.market_type or getattr(cfg, "market_type", "futures")
 
         root = DataRoot(
             data_root=cfg.data_root,
@@ -1673,6 +1674,7 @@ class BenchmarkRunner:
             quote=quote,
             settle=settle,
             timeframe=timeframe,
+            market_type=market_type,
         )
         if not root.ohlcv().exists():
             raise FileNotFoundError(f"OHLCV missing for extra coin: {root.ohlcv()}")

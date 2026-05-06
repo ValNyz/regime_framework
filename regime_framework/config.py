@@ -55,6 +55,7 @@ class DataPaths:
         quote: str,
         settle: str,
         timeframe: str,
+        market_type: str = "futures",
         cross_target: str | None = None,
         cross_quote: str | None = None,
         cross_settle: str | None = None,
@@ -64,6 +65,7 @@ class DataPaths:
             data_root=Path(data_root).expanduser(),
             venue=venue, target=target, quote=quote, settle=settle,
             timeframe=timeframe,
+            market_type=market_type,
             cross_target=cross_target,
             cross_quote=cross_quote,
             cross_settle=cross_settle,
@@ -164,13 +166,18 @@ class ExtraCoinSpec:
     different OHLCV/funding/cross paths. A `coin_id` one-hot feature is added
     so the classifier can learn coin-specific biases.
 
-    Defaults follow the main target's venue/quote/settle/timeframe when None.
+    Defaults follow the main target's venue/quote/settle/timeframe/
+    market_type when None.
+
+    market_type: "futures" (default, with funding) or "spot" (no funding).
+    Path resolution branches on this — see DataRoot for layout details.
     """
     target: str
     venue: str | None = None
     quote: str | None = None
     settle: str | None = None
     timeframe: str | None = None
+    market_type: str | None = None
 
 
 @dataclass
@@ -374,10 +381,11 @@ class PlotConfig:
 @dataclass
 class RunConfig:
     target: str = "BTC"
-    venue: str = "binance"
+    venue: str = "binance"               # "binance" | "hyperliquid"
     quote: str = "USDT"
-    settle: str = "USDT"
+    settle: str = "USDT"                 # ignored when market_type == "spot"
     timeframe: str = "1h"
+    market_type: str = "futures"         # "futures" (default, with funding) | "spot"
     data_root: Path | None = None        # for resolving extra coin paths
     paths: DataPaths = field(default_factory=lambda: DataPaths(ohlcv=Path("/dev/null")))
     label: LabelConfig = field(default_factory=LabelConfig)
@@ -445,6 +453,7 @@ class RunConfig:
                 quote=data.get("quote", "USDT"),
                 settle=data.get("settle", data.get("quote", "USDT")),
                 timeframe=timeframe,
+                market_type=data.get("market_type", "futures"),
                 cross_target=cross.get("target"),
                 cross_quote=cross.get("quote"),
                 cross_settle=cross.get("settle"),
@@ -493,6 +502,7 @@ class RunConfig:
             quote=quote,
             settle=settle,
             timeframe=timeframe,
+            market_type=data.get("market_type", "futures"),
             data_root=Path(data_root).expanduser() if data_root else None,
             paths=resolved_paths,
             label=LabelConfig(**data.get("label", {})),

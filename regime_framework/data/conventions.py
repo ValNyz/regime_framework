@@ -4,10 +4,19 @@ Centralizes the naming scheme so a preset only needs to specify
 (target, venue, quote, settle, timeframe, data_root) — paths are derived.
 
 Conventions (relative to data_root):
-  binance/futures/{ASSET}_{QUOTE}_{SETTLE}-{TF}-futures.feather
-  binance/futures/{ASSET}_{QUOTE}_{SETTLE}-{TF}-funding_rate.feather
-  hyperliquid/futures/{ASSET}_{QUOTE}_{SETTLE}-{TF}-futures.feather
-  hyperliquid/futures/{ASSET}_{QUOTE}_{SETTLE}-{TF}-funding_rate.feather
+  futures (default):
+    {VENUE}/futures/{ASSET}_{QUOTE}_{SETTLE}-{TF}-futures.feather
+    {VENUE}/futures/{ASSET}_{QUOTE}_{SETTLE}-{TF}-funding_rate.feather
+  spot (Freqtrade-compatible — file at venue root, no settle):
+    {VENUE}/{ASSET}_{QUOTE}-{TF}.feather
+    (no funding for spot)
+
+Same VENUE serves both market types — futures live under `futures/`, spot at
+the venue root. Examples:
+  binance/futures/BTC_USDT_USDT-1h-futures.feather       (linear futures)
+  binance/BTC_USDT-1h.feather                            (spot, same venue)
+  hyperliquid/futures/BTC_USDC_USDC-1h-futures.feather   (futures)
+  hyperliquid/BTC_USDC-1h.feather                        (spot, same venue)
   external/binance_funding_{SYMBOL}.parquet     (SYMBOL = ASSET+QUOTE, e.g. BTCUSDT)
   external/etf_flows_{btc|eth}.parquet
   external/fng_daily.parquet
@@ -52,11 +61,12 @@ class DataRoot:
         root.external_dir()  # /data/external
     """
     data_root: Path
-    venue: str                    # "binance" | "hyperliquid"
+    venue: str                    # "binance" | "hyperliquid" | "binance_spot"
     target: str                   # asset symbol, e.g. "BTC"
     quote: str                    # "USDT" | "USDC"
-    settle: str                   # usually same as quote
+    settle: str                   # usually same as quote (ignored for spot)
     timeframe: str                # "1h" | "30m" | ...
+    market_type: str = "futures"  # "futures" | "spot" — controls path layout
     cross_target: str | None = None      # auto-resolved if None
     cross_quote: str | None = None       # defaults to quote
     cross_settle: str | None = None      # defaults to settle
@@ -72,12 +82,21 @@ class DataRoot:
 
     # ---------------------------------------------------------------------
     def venue_dir(self) -> Path:
+        if self.market_type == "spot":
+            return self.data_root / self.venue
         return self.data_root / self.venue / "futures"
 
     def _ohlcv(self, asset: str, quote: str, settle: str) -> Path:
+        if self.market_type == "spot":
+            # Freqtrade convention: {venue}/{ASSET}_{QUOTE}-{TF}.feather (no settle)
+            return self.venue_dir() / f"{asset}_{quote}-{self.timeframe}.feather"
         return self.venue_dir() / f"{asset}_{quote}_{settle}-{self.timeframe}-futures.feather"
 
     def _funding(self, asset: str, quote: str, settle: str) -> Path:
+        if self.market_type == "spot":
+            # Spot has no funding rate — return a non-existent path so the
+            # downstream `.exists()` check skips funding cleanly.
+            return self.venue_dir() / f"{asset}_{quote}-{self.timeframe}-funding_rate-NOT-AVAILABLE-FOR-SPOT.feather"
         return self.venue_dir() / f"{asset}_{quote}_{settle}-{self.timeframe}-funding_rate.feather"
 
     # ---------------------------------------------------------------------
