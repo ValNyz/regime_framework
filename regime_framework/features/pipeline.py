@@ -13,13 +13,17 @@ import pandas as pd
 
 from .technical import compute_technical_features
 from .external import compute_external_features
+from .funding import compute_funding_features
 from .trading_signals import compute_trading_signal_features
+from .regime_signals import compute_regime_signal_features
 
 
 @dataclass
 class FeaturePipeline:
     use_technical: bool = True
     use_external: bool = True
+    use_funding: bool = True
+    use_regime_signals: bool = True
     use_trading_signals: bool = False
     trading_signals_yaml: Path | None = None
     target_funding_path: Path | None = None
@@ -54,7 +58,6 @@ class FeaturePipeline:
             ext = compute_external_features(
                 df,
                 external_dir=self.external_dir,
-                target_funding_path=self.target_funding_path,
                 cross_ohlcv_path=self.cross_ohlcv_path,
                 cross_name=self.cross_name,
             )
@@ -62,6 +65,24 @@ class FeaturePipeline:
             for c in ext.columns:
                 self.column_sources[c] = "external"
             print(f"  external:  {ext.shape[1]} features")
+
+        if self.use_funding:
+            fnd = compute_funding_features(
+                df,
+                target_funding_path=self.target_funding_path,
+                external_dir=self.external_dir,
+            )
+            feats.append(fnd)
+            for c in fnd.columns:
+                self.column_sources[c] = "funding"
+            print(f"  funding:   {fnd.shape[1]} features")
+
+        if self.use_regime_signals:
+            reg = compute_regime_signal_features(df)
+            feats.append(reg)
+            for c in reg.columns:
+                self.column_sources[c] = "regime_signals"
+            print(f"  regime_signals: {reg.shape[1]} features")
 
         if self.use_trading_signals:
             # Make funding rate available to funding-type signals

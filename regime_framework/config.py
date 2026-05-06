@@ -104,8 +104,18 @@ class LabelConfig:
 
 @dataclass
 class FeatureConfig:
+    # Categories — each is independently togglable via its `use_*` flag.
+    # technical:      pure OHLCV-derived (returns, vol, ATR, EMA, ADX,
+    #                 GK vol, asymmetric vol, HTF agreement, breakout, etc.)
+    # external:       cross-asset OHLCV + macro (FNG, ETF, DXY, VIX)
+    # funding:        funding-rate features (target / BTC / ETH funding)
+    # regime_signals: synthesized 3-state regime classifiers
+    #                 (BTC trend, vol, drawdown — mirror YAML's regime gates)
+    # trading_signals: binary 0/1 columns from a CCA-format signals YAML
     use_technical: bool = True
     use_external: bool = True
+    use_funding: bool = True
+    use_regime_signals: bool = True
     use_trading_signals: bool = False
     trading_signals_yaml: Path | None = None
     drop_nan_rows: bool = True

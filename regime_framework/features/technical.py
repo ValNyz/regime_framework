@@ -52,6 +52,30 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["atr_pct_50"] = atr50 / close
     feat["atr_ratio_14_50"] = atr14 / atr50.replace(0, np.nan)
     feat["atr_ratio_50_200"] = atr50 / atr200.replace(0, np.nan)
+    # Rolling percentile of ATR — companion to YAML's `atr_min/atr_max` gate.
+    feat["atr_pct_14_pctile_500"] = (atr14 / close).rolling(500, min_periods=50).rank(pct=True)
+
+    # ADX(14) — trending strength. YAML's `use_antitrend / adx_max` gate
+    # references this; exposing the continuous value lets the model learn
+    # smooth regime-conditional behaviour.
+    up = high.diff()
+    dn = -low.diff()
+    plus_dm = up.where((up > dn) & (up > 0), 0)
+    minus_dm = dn.where((dn > up) & (dn > 0), 0)
+    plus_di = 100 * plus_dm.ewm(alpha=1 / 14, adjust=False).mean() / (atr14 + 1e-12)
+    minus_di = 100 * minus_dm.ewm(alpha=1 / 14, adjust=False).mean() / (atr14 + 1e-12)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
+    feat["adx_14"] = dx.ewm(alpha=1 / 14, adjust=False).mean()
+
+    # Garman-Klass OHLC vol estimator — uses range AND open/close, ~5x more
+    # efficient than close-only realized vol because it exploits intra-bar
+    # extremes. SOTA in volatility forecasting.
+    open_ = df["open"] if "open" in df.columns else close.shift(1)
+    log_hl = np.log(high / low.replace(0, np.nan))
+    log_co = np.log(close / open_.replace(0, np.nan))
+    gk_step = 0.5 * log_hl**2 - (2.0 * np.log(2.0) - 1.0) * log_co**2
+    feat["vol_gk_14"] = np.sqrt(gk_step.rolling(14).mean().clip(lower=0))
+    feat["vol_gk_50"] = np.sqrt(gk_step.rolling(50).mean().clip(lower=0))
 
     # EMA distance
     for w in (10, 20, 50, 100, 200):
@@ -79,6 +103,35 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
         m = log_ret.rolling(w).mean()
         s = log_ret.rolling(w).std()
         feat[f"trend_strength_{w}"] = (m / s).replace([np.inf, -np.inf], np.nan)
+    # Trend-strength absolute percentile — continuous "is the market currently
+    # trending or ranging" feature. Companion to ADX antitrend gate.
+    ts60 = feat["trend_strength_60"]
+    feat["trend_strength_60_pctile_500"] = ts60.abs().rolling(500, min_periods=50).rank(pct=True)
+    # Multi-scale trend agreement — sum of sign(ret_w) across 5/20/60/200 bars.
+    # Range [-4, +4]: +4 = aligned bull across all timescales, -4 aligned bear,
+    # near 0 = conflicting / no clear trend. Captures multi-scale alignment in
+    # a single feature.
+    feat["htf_trend_agreement"] = (
+        np.sign(close.pct_change(5).fillna(0)) +
+        np.sign(close.pct_change(20).fillna(0)) +
+        np.sign(close.pct_change(60).fillna(0)) +
+        np.sign(close.pct_change(200).fillna(0))
+    )
+    # Asymmetric volatility — std(neg returns) / std(pos returns) over 50 bars.
+    # >1 = downside vol dominates (fear); <1 = upside dominates (euphoria).
+    pos_ret = log_ret.where(log_ret > 0, np.nan)
+    neg_ret = log_ret.where(log_ret < 0, np.nan)
+    pos_vol = pos_ret.rolling(50, min_periods=10).std()
+    neg_vol = neg_ret.rolling(50, min_periods=10).std()
+    feat["vol_asym_50"] = (neg_vol / (pos_vol + 1e-12)).replace([np.inf, -np.inf], np.nan)
+    # Range breakout (signed) — +1 if close just exited a 50-bar range upward,
+    # -1 downward, 0 inside. Captures compression -> expansion transitions.
+    rl_50 = low.rolling(50).min()
+    rh_50 = high.rolling(50).max()
+    breakout = pd.Series(0.0, index=df.index, dtype=np.float64)
+    breakout[(close > rh_50.shift(1)).fillna(False)] = 1.0
+    breakout[(close < rl_50.shift(1)).fillna(False)] = -1.0
+    feat["range_breakout_50"] = breakout
 
     # RSI
     for n in (14, 28):

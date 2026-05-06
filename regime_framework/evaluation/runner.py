@@ -329,6 +329,8 @@ class BenchmarkRunner:
         pipeline = FeaturePipeline(
             use_technical=cfg.features.use_technical,
             use_external=cfg.features.use_external,
+            use_funding=cfg.features.use_funding,
+            use_regime_signals=cfg.features.use_regime_signals,
             use_trading_signals=cfg.features.use_trading_signals,
             trading_signals_yaml=cfg.features.trading_signals_yaml,
             target_funding_path=cfg.paths.funding,

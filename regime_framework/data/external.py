@@ -1,5 +1,8 @@
-"""External data sources (FNG, ETF flows, DXY, VIX, BTC funding, ETH funding)
+"""External data sources (FNG, ETF flows, DXY, VIX) + cross-asset OHLCV
 loaded as features merged backward onto the main OHLCV frame.
+
+Funding-rate features (target / BTC / ETH funding) live in their own
+category — see `regime_framework/features/funding.py`.
 """
 from __future__ import annotations
 
@@ -12,10 +15,9 @@ from .alignment import merge_backward, merge_no_lookahead
 from .loaders import load_parquet_or_feather
 
 
-# Default file names inside the user's external/ directory
+# Default file names inside the user's external/ directory.
+# Funding files (binance_funding_BTC/ETH) live in features/funding.py.
 DEFAULT_FILES = {
-    "btc_funding": "binance_funding_BTCUSDT.parquet",
-    "eth_funding": "binance_funding_ETHUSDT.parquet",
     "fng": "fng_daily.parquet",
     "etf_btc": "etf_flows_btc.parquet",
     "etf_eth": "etf_flows_eth.parquet",
@@ -27,40 +29,22 @@ DEFAULT_FILES = {
 def load_external_features(
     df: pd.DataFrame,
     external_dir: Path | None,
-    target_funding_path: Path | None = None,
     cross_ohlcv_path: Path | None = None,
     cross_name: str = "cross",
 ) -> pd.DataFrame:
-    """Compute external feature matrix aligned to df.
+    """Compute external feature matrix aligned to df (cross-asset + macro).
 
     Args:
         df: main OHLCV frame (must have 'date' and 'close')
-        external_dir: directory containing macro/funding files (FNG, ETF, DXY, VIX, BTC/ETH funding)
-        target_funding_path: native funding rate of the target asset (1h)
+        external_dir: directory containing macro files (FNG, ETF, DXY, VIX)
         cross_ohlcv_path: cross-asset OHLCV reference for relative-strength features
         cross_name: prefix-friendly name for the cross asset (eth, btc, ...)
 
-    All features are past-only by construction (backward merge_asof).
+    All features are past-only by construction. Funding-rate features
+    (target / BTC / ETH) live in their own category — see
+    `regime_framework/features/funding.py`.
     """
     feat = pd.DataFrame(index=df.index)
-
-    # ----- Target asset funding (1h native) -----
-    if target_funding_path is not None and target_funding_path.exists():
-        try:
-            fund = load_parquet_or_feather(target_funding_path)
-            fund_col = "open" if "open" in fund.columns else "funding_rate"
-            merged = merge_no_lookahead(df, fund, {fund_col: "fund_rate"})
-            fr = merged["fund_rate"].astype(float)
-            feat["target_funding"] = fr.values
-            for w in (24, 72, 168, 720):
-                feat[f"target_funding_mean_{w}"] = fr.rolling(w).mean().values
-                feat[f"target_funding_zscore_{w}"] = (
-                    (fr - fr.rolling(w).mean()) / (fr.rolling(w).std() + 1e-12)
-                ).values
-            feat["target_funding_cum_168"] = fr.rolling(168).sum().values
-            feat["target_funding_cum_720"] = fr.rolling(720).sum().values
-        except Exception as e:
-            print(f"  WARN: target funding skipped ({target_funding_path.name}): {e}")
 
     # ----- Cross-asset OHLCV (relative strength + correlation) -----
     if cross_ohlcv_path is not None and cross_ohlcv_path.exists():
@@ -91,39 +75,6 @@ def load_external_features(
 
     if external_dir is None or not external_dir.exists():
         return feat
-
-    # ----- BTC funding (8h sparse, forward-filled) -----
-    btc_fund = external_dir / DEFAULT_FILES["btc_funding"]
-    if btc_fund.exists():
-        try:
-            bfund = load_parquet_or_feather(btc_fund)
-            merged = merge_backward(df, bfund, ["funding_rate"], prefix="btcfund")
-            fr = merged["btcfund_funding_rate"].astype(float)
-            feat["btc_funding"] = fr.values
-            feat["btc_funding_mean_21"] = fr.rolling(21).mean().values
-            feat["btc_funding_zscore_21"] = (
-                (fr - fr.rolling(21).mean()) / (fr.rolling(21).std() + 1e-12)
-            ).values
-            feat["btc_funding_zscore_90"] = (
-                (fr - fr.rolling(90).mean()) / (fr.rolling(90).std() + 1e-12)
-            ).values
-            feat["btc_funding_cum_21"] = fr.rolling(21).sum().values
-        except Exception as e:
-            print(f"  WARN: BTC funding skipped: {e}")
-
-    # ----- ETH funding -----
-    eth_fund = external_dir / DEFAULT_FILES["eth_funding"]
-    if eth_fund.exists():
-        try:
-            efund = load_parquet_or_feather(eth_fund)
-            merged = merge_backward(df, efund, ["funding_rate"], prefix="ethfund")
-            fr = merged["ethfund_funding_rate"].astype(float)
-            feat["eth_funding"] = fr.values
-            feat["eth_funding_zscore_21"] = (
-                (fr - fr.rolling(21).mean()) / (fr.rolling(21).std() + 1e-12)
-            ).values
-        except Exception as e:
-            print(f"  WARN: ETH funding skipped: {e}")
 
     # ----- Fear & Greed (daily) -----
     fng_path = external_dir / DEFAULT_FILES["fng"]
