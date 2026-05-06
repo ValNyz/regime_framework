@@ -902,6 +902,8 @@ class BenchmarkRunner:
                     "synth_gain": r.synth_gain,
                     "sharpe": r.sharpe,
                     "max_dd": r.max_dd,
+                    "calmar": r.calmar,
+                    "profit_factor": r.profit_factor,
                     "n_positive_months": r.n_positive_months,
                     "n_total_months": r.n_total_months,
                     "bh_gain": bh_gain_fold,
@@ -999,9 +1001,12 @@ class BenchmarkRunner:
         from .metrics import (
             synth_gain_by_month, consistency_positive_months,
             sharpe_ratio, periods_per_year,
+            synth_equity_curve, max_drawdown, profit_factor, calmar_ratio,
         )
         stitched_consistency: dict[str, tuple[int, int]] = {}
         stitched_sharpe: dict[str, float] = {}
+        stitched_calmar: dict[str, float] = {}
+        stitched_pf: dict[str, float] = {}
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
             ppy = periods_per_year(cfg.timeframe)
@@ -1038,11 +1043,23 @@ class BenchmarkRunner:
                     closes_concat, preds_concat,
                     periods_per_year=ppy, transaction_cost=cost,
                 )
+                # Stitched Calmar = total OOS gain / |max DD over stitched curve|.
+                # Risk-adjusted return per unit of pain over the full deployment.
+                eq_concat, gain_concat = synth_equity_curve(
+                    closes_concat, preds_concat, transaction_cost=cost,
+                )
+                stitched_calmar[pname] = calmar_ratio(gain_concat, max_drawdown(eq_concat))
+                # Stitched Profit Factor over all OOS bars.
+                stitched_pf[pname] = profit_factor(
+                    closes_concat, preds_concat, transaction_cost=cost,
+                )
 
         self._print_cv_summary(
             per_fold_df, mode, cfg=cfg,
             stitched_consistency=stitched_consistency,
             stitched_sharpe=stitched_sharpe,
+            stitched_calmar=stitched_calmar,
+            stitched_pf=stitched_pf,
         )
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
@@ -1195,6 +1212,8 @@ class BenchmarkRunner:
         cfg: RunConfig | None = None,
         stitched_consistency: dict[str, tuple[int, int]] | None = None,
         stitched_sharpe: dict[str, float] | None = None,
+        stitched_calmar: dict[str, float] | None = None,
+        stitched_pf: dict[str, float] | None = None,
     ) -> None:
         from .metrics import compound_returns
 
@@ -1212,6 +1231,8 @@ class BenchmarkRunner:
             gain_total=("synth_gain", _compound),
             sharpe_mean=("sharpe", "mean"),
             max_dd_min=("max_dd", "min"),  # min of negative DDs = worst DD
+            calmar_mean=("calmar", "mean"),
+            pf_mean=("profit_factor", "mean"),
             n_pos_months_sum=("n_positive_months", "sum"),
             n_total_months_sum=("n_total_months", "sum"),
             n_folds=("fold", "count"),
@@ -1232,6 +1253,14 @@ class BenchmarkRunner:
         if stitched_sharpe:
             agg["sharpe_mean"] = agg["predictor"].map(
                 lambda n: stitched_sharpe.get(n, float("nan"))
+            )
+        if stitched_calmar:
+            agg["calmar_mean"] = agg["predictor"].map(
+                lambda n: stitched_calmar.get(n, float("nan"))
+            )
+        if stitched_pf:
+            agg["pf_mean"] = agg["predictor"].map(
+                lambda n: stitched_pf.get(n, float("nan"))
             )
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
@@ -1267,7 +1296,8 @@ class BenchmarkRunner:
         table = Table(title=title)
         for col in (
             "predictor", "family", "κ_mean", "κ_std", "dir-κ", "acc", "F1",
-            "gain_mean", "gain_std", "gain_total", "Sharpe", "maxDD", "+m", "n_folds",
+            "gain_mean", "gain_std", "gain_total",
+            "Sharpe", "Calmar", "PF", "maxDD", "+m", "n_folds",
         ):
             table.add_column(col, justify="right" if col not in ("predictor", "family") else "left")
 
@@ -1279,7 +1309,7 @@ class BenchmarkRunner:
             f"[dim]{bh_mean*100:+.1f}%[/dim]",
             bh_std_str,
             f"[dim]{bh_total*100:+.1f}%[/dim]",
-            "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]",
+            "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]", "[dim]--[/dim]",
             f"[dim]{int(len(bh_per_fold))}[/dim]",
         )
 
@@ -1311,6 +1341,19 @@ class BenchmarkRunner:
             sharpe = float(r["sharpe_mean"]) if not pd.isna(r["sharpe_mean"]) else float("nan")
             sh_str = f"{sharpe:+.2f}" if not np.isnan(sharpe) else "--"
             sh_color = "green" if sharpe > 1.0 else ("yellow" if sharpe > 0 else "red")
+            calmar = float(r["calmar_mean"]) if not pd.isna(r["calmar_mean"]) else float("nan")
+            calmar_str = f"{calmar:+.2f}" if not np.isnan(calmar) else "--"
+            calmar_color = "green" if calmar > 1.0 else ("yellow" if calmar > 0 else "red")
+            pf_v = float(r["pf_mean"]) if not pd.isna(r["pf_mean"]) else float("nan")
+            if np.isinf(pf_v):
+                pf_str = "∞"
+                pf_color = "green"
+            elif np.isnan(pf_v):
+                pf_str = "--"
+                pf_color = ""
+            else:
+                pf_str = f"{pf_v:.2f}"
+                pf_color = "green" if pf_v > 1.5 else ("yellow" if pf_v > 1.0 else "red")
             max_dd = float(r["max_dd_min"]) if not pd.isna(r["max_dd_min"]) else float("nan")
             dd_str = f"{max_dd*100:+.1f}%" if not np.isnan(max_dd) else "--"
             n_pos = int(r["n_pos_months_sum"]) if not pd.isna(r["n_pos_months_sum"]) else 0
@@ -1325,6 +1368,8 @@ class BenchmarkRunner:
                 gstd_str,
                 f"[{gt_color}]{gain_total*100:+.1f}%[/{gt_color}]",
                 f"[{sh_color}]{sh_str}[/{sh_color}]" if not np.isnan(sharpe) else "--",
+                f"[{calmar_color}]{calmar_str}[/{calmar_color}]" if not np.isnan(calmar) else "--",
+                f"[{pf_color}]{pf_str}[/{pf_color}]" if pf_color else pf_str,
                 dd_str,
                 cm_str,
                 str(int(r["n_folds"])),

@@ -151,6 +151,40 @@ def max_drawdown(equity: np.ndarray) -> float:
     return float(np.min(dd))
 
 
+def profit_factor(
+    closes: np.ndarray,
+    labels: np.ndarray,
+    transaction_cost: float = 0.0,
+) -> float:
+    """sum(positive strategy returns) / |sum(negative strategy returns)|.
+
+    Classic trading metric. >1 = profitable, >1.5 = decent edge, >2 = strong.
+    Robust to outliers compared to win-rate. Returns +inf when there are
+    only winners, NaN when no trades.
+    """
+    log_ret = _strategy_log_returns(np.asarray(closes, dtype=np.float64), labels, transaction_cost)
+    if len(log_ret) == 0:
+        return float("nan")
+    pos = float(log_ret[log_ret > 0].sum())
+    neg = float(-log_ret[log_ret < 0].sum())
+    if neg <= 1e-12:
+        return float("inf") if pos > 0 else float("nan")
+    return pos / neg
+
+
+def calmar_ratio(total_gain: float, max_dd: float) -> float:
+    """Calmar = total_gain / |max_dd|. Risk-adjusted return per unit of pain.
+
+    >1 = decent, >3 = excellent, <0 = lost money. Return NaN when DD is
+    undefined or zero (monotonic equity).
+    """
+    if not np.isfinite(total_gain) or not np.isfinite(max_dd):
+        return float("nan")
+    if abs(max_dd) < 1e-12:
+        return float("nan")
+    return float(total_gain / abs(max_dd))
+
+
 def consistency_positive_months(
     monthly_gains: dict[str, float],
 ) -> tuple[int, int]:
@@ -288,6 +322,8 @@ def evaluate(
     dir_kappa = float("nan")
     sharpe = float("nan")
     max_dd_v = float("nan")
+    calmar = float("nan")
+    pf = float("nan")
     n_pos_months = 0
     n_total_months = 0
     if closes is not None and len(closes) == len(y_pred):
@@ -309,6 +345,8 @@ def evaluate(
             transaction_cost=transaction_cost,
         )
         max_dd_v = max_drawdown(equity)
+        calmar = calmar_ratio(synth_gain, max_dd_v)
+        pf = profit_factor(closes_f, y_pred_f, transaction_cost=transaction_cost)
         # Consistency: needs dates, masked the same way
         if dates is not None and len(dates) == len(y_pred):
             dates_arr = np.asarray(dates)
@@ -326,6 +364,8 @@ def evaluate(
         dir_kappa=dir_kappa,
         sharpe=sharpe,
         max_dd=max_dd_v,
+        calmar=calmar,
+        profit_factor=pf,
         n_positive_months=n_pos_months,
         n_total_months=n_total_months,
         metadata=metadata or {},

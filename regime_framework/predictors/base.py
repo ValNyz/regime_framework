@@ -84,6 +84,10 @@ class PredictionResult:
     # Max peak-to-trough drawdown of the synth equity curve, as a NEGATIVE
     # fraction (e.g. -0.25 = 25% deepest decline). 0 if equity was monotonic.
     max_dd: float = float("nan")
+    # Calmar: synth_gain / |max_dd|. Risk-adjusted return per unit of pain.
+    calmar: float = float("nan")
+    # Profit factor: sum(positive bars) / |sum(negative bars)|.
+    profit_factor: float = float("nan")
     # Consistency: positive-return months over the test slice. Useful to
     # distinguish "lucky-month" gains from steady ones.
     n_positive_months: int = 0
