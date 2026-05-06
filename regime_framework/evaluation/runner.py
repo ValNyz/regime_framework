@@ -50,8 +50,11 @@ def _resolve_cross_paths(
     """Resolve cfg.cross (list of CrossAssetSpec) to (path, name) tuples.
 
     Each spec defaults missing fields to the run's root values (venue, quote,
-    settle, market_type) so the minimal entry is `- target: SOL`. Names default
-    to `target.lower()`. Missing files are reported by the loader, not here.
+    settle, market_type) so the minimal entry is `- target: SOL`. Default name
+    is `target.lower()`; when multiple specs share the same target without an
+    explicit `name:`, names are auto-disambiguated by market_type (so two
+    `target: ETH` entries with different market_types become `eth_futures` +
+    `eth_spot` instead of colliding). Missing files reported by the loader.
     """
     specs = getattr(cfg, "cross", None) or []
     if not specs:
@@ -73,6 +76,14 @@ def _resolve_cross_paths(
             timeframe=cfg.timeframe,
             market_type=cfg.market_type,
         )
+    # Pre-pass: count how many specs share the same default prefix
+    # (target.lower(), only counting those without explicit `name:`).
+    default_counts: dict[str, int] = {}
+    for s in specs:
+        if s.name is None:
+            key = s.target.lower()
+            default_counts[key] = default_counts.get(key, 0) + 1
+
     out: list[tuple[Path, str]] = []
     for spec in specs:
         path = base.coin_ohlcv(
@@ -82,7 +93,15 @@ def _resolve_cross_paths(
             market_type=spec.market_type,
             venue=spec.venue,
         )
-        name = (spec.name or spec.target).lower()
+        if spec.name:
+            name = spec.name.lower()
+        else:
+            base_name = spec.target.lower()
+            if default_counts.get(base_name, 0) > 1:
+                mt = spec.market_type or cfg.market_type
+                name = f"{base_name}_{mt}"
+            else:
+                name = base_name
         out.append((path, name))
     return out
 
