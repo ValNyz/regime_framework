@@ -1007,6 +1007,7 @@ class BenchmarkRunner:
         stitched_sharpe: dict[str, float] = {}
         stitched_calmar: dict[str, float] = {}
         stitched_pf: dict[str, float] = {}
+        stitched_max_dd: dict[str, float] = {}
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
             ppy = periods_per_year(cfg.timeframe)
@@ -1043,12 +1044,17 @@ class BenchmarkRunner:
                     closes_concat, preds_concat,
                     periods_per_year=ppy, transaction_cost=cost,
                 )
-                # Stitched Calmar = total OOS gain / |max DD over stitched curve|.
-                # Risk-adjusted return per unit of pain over the full deployment.
+                # Stitched DD over the full concatenated equity curve. Used
+                # for Calmar AND replaces the maxDD column (which was the
+                # worst PER-FOLD DD — different quantity, made the table
+                # internally inconsistent: a strategy could show maxDD=-14%
+                # while Calmar = gain/|stitched_dd| reflected -17%).
                 eq_concat, gain_concat = synth_equity_curve(
                     closes_concat, preds_concat, transaction_cost=cost,
                 )
-                stitched_calmar[pname] = calmar_ratio(gain_concat, max_drawdown(eq_concat))
+                dd_concat = max_drawdown(eq_concat)
+                stitched_max_dd[pname] = dd_concat
+                stitched_calmar[pname] = calmar_ratio(gain_concat, dd_concat)
                 # Stitched Profit Factor over all OOS bars.
                 stitched_pf[pname] = profit_factor(
                     closes_concat, preds_concat, transaction_cost=cost,
@@ -1060,6 +1066,7 @@ class BenchmarkRunner:
             stitched_sharpe=stitched_sharpe,
             stitched_calmar=stitched_calmar,
             stitched_pf=stitched_pf,
+            stitched_max_dd=stitched_max_dd,
         )
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
@@ -1214,6 +1221,7 @@ class BenchmarkRunner:
         stitched_sharpe: dict[str, float] | None = None,
         stitched_calmar: dict[str, float] | None = None,
         stitched_pf: dict[str, float] | None = None,
+        stitched_max_dd: dict[str, float] | None = None,
     ) -> None:
         from .metrics import compound_returns
 
@@ -1261,6 +1269,10 @@ class BenchmarkRunner:
         if stitched_pf:
             agg["pf_mean"] = agg["predictor"].map(
                 lambda n: stitched_pf.get(n, float("nan"))
+            )
+        if stitched_max_dd:
+            agg["max_dd_min"] = agg["predictor"].map(
+                lambda n: stitched_max_dd.get(n, float("nan"))
             )
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
