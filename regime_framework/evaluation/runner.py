@@ -1011,6 +1011,7 @@ class BenchmarkRunner:
         stitched_max_dd: dict[str, float] = {}
         stitched_avg_excess: dict[str, float] = {}
         stitched_time_above_bh: dict[str, float] = {}
+        stitched_gain: dict[str, float] = {}
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
             ppy = periods_per_year(cfg.timeframe)
@@ -1058,6 +1059,12 @@ class BenchmarkRunner:
                 dd_concat = max_drawdown(eq_concat)
                 stitched_max_dd[pname] = dd_concat
                 stitched_calmar[pname] = calmar_ratio(gain_concat, dd_concat)
+                # Total gain over the stitched OOS span. Per-fold compounded
+                # gain (used previously) misses cross-fold boundary returns
+                # and over-counts entry costs (one per fold), so it can show
+                # opposite sign from PF / Sharpe on the same data. Use the
+                # stitched value here so all aggregate metrics agree.
+                stitched_gain[pname] = gain_concat
                 # Stitched Profit Factor over all OOS bars.
                 stitched_pf[pname] = profit_factor(
                     closes_concat, preds_concat, transaction_cost=cost,
@@ -1082,6 +1089,7 @@ class BenchmarkRunner:
             stitched_max_dd=stitched_max_dd,
             stitched_avg_excess=stitched_avg_excess,
             stitched_time_above_bh=stitched_time_above_bh,
+            stitched_gain=stitched_gain,
         )
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
@@ -1240,6 +1248,7 @@ class BenchmarkRunner:
         stitched_max_dd: dict[str, float] | None = None,
         stitched_avg_excess: dict[str, float] | None = None,
         stitched_time_above_bh: dict[str, float] | None = None,
+        stitched_gain: dict[str, float] | None = None,
     ) -> None:
         from .metrics import compound_returns
 
@@ -1300,6 +1309,16 @@ class BenchmarkRunner:
         agg["time_above_bh"] = agg["predictor"].map(
             lambda n: (stitched_time_above_bh or {}).get(n, float("nan"))
         )
+        # Override gain_total with the stitched value so all aggregate
+        # metrics (gain_total / Sharpe / Calmar / PF / maxDD / avg_exc / t>BH)
+        # come from the same source. Per-fold compounded gain is biased
+        # vs the others (misses cross-fold boundary returns, over-counts
+        # entry costs) and could show opposite sign from PF on the same
+        # row — see the LinearQ-3 anomaly: gain_total=+24%, PF=0.96.
+        if stitched_gain:
+            agg["gain_total"] = agg["predictor"].map(
+                lambda n: stitched_gain.get(n, float("nan"))
+            )
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
         bh_per_fold = per_fold.drop_duplicates("fold").set_index("fold").get(
