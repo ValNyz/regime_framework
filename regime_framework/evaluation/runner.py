@@ -996,10 +996,15 @@ class BenchmarkRunner:
         # which double-counts months that span fold boundaries (e.g. a 30-day
         # fold spanning May 28 → June 27 contributes BOTH May and June, then
         # the next fold contributes June again).
-        from .metrics import synth_gain_by_month, consistency_positive_months
+        from .metrics import (
+            synth_gain_by_month, consistency_positive_months,
+            sharpe_ratio, periods_per_year,
+        )
         stitched_consistency: dict[str, tuple[int, int]] = {}
+        stitched_sharpe: dict[str, float] = {}
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
+            ppy = periods_per_year(cfg.timeframe)
             all_pred_names: set[str] = set()
             for fp in all_fold_preds:
                 all_pred_names.update(fp["predictions"].keys())
@@ -1024,9 +1029,20 @@ class BenchmarkRunner:
                     closes_concat, preds_concat, dates_concat, transaction_cost=cost,
                 )
                 stitched_consistency[pname] = consistency_positive_months(monthly)
+                # Stitched Sharpe: ONE estimate over all concatenated OOS bars
+                # (vs mean(per-fold Sharpe) which is biased and noisy on short
+                # folds). Same definition: mean(strategy_log_ret) / std × √ppy
+                # but computed once on N_folds × test_window_bars samples
+                # instead of averaged over short windows.
+                stitched_sharpe[pname] = sharpe_ratio(
+                    closes_concat, preds_concat,
+                    periods_per_year=ppy, transaction_cost=cost,
+                )
 
         self._print_cv_summary(
-            per_fold_df, mode, cfg=cfg, stitched_consistency=stitched_consistency,
+            per_fold_df, mode, cfg=cfg,
+            stitched_consistency=stitched_consistency,
+            stitched_sharpe=stitched_sharpe,
         )
 
         # Stitched OOS synth equity: pick the predictor with the best MEAN
@@ -1178,6 +1194,7 @@ class BenchmarkRunner:
         mode: str,
         cfg: RunConfig | None = None,
         stitched_consistency: dict[str, tuple[int, int]] | None = None,
+        stitched_sharpe: dict[str, float] | None = None,
     ) -> None:
         from .metrics import compound_returns
 
@@ -1207,6 +1224,15 @@ class BenchmarkRunner:
             def _stitched_tot(name): return stitched_consistency.get(name, (0, 0))[1]
             agg["n_pos_months_sum"] = agg["predictor"].map(_stitched_pos)
             agg["n_total_months_sum"] = agg["predictor"].map(_stitched_tot)
+
+        # Replace mean-of-per-fold Sharpe (noisy + biased upward by short
+        # window annualization) with the stitched-OOS Sharpe — one mean/std
+        # estimate over the full concatenated test slice. The "true" Sharpe
+        # the strategy would deliver if deployed across all fold windows.
+        if stitched_sharpe:
+            agg["sharpe_mean"] = agg["predictor"].map(
+                lambda n: stitched_sharpe.get(n, float("nan"))
+            )
 
         # Buy-and-hold reference: same per fold, so de-dup by fold first.
         bh_per_fold = per_fold.drop_duplicates("fold").set_index("fold").get(
