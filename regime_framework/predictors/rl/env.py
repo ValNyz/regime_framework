@@ -86,7 +86,7 @@ class RegimeTradingEnv(gym.Env if gym is not None else object):  # type: ignore[
         features: np.ndarray,
         closes: np.ndarray,
         action_space_type: str = ACTION_DISCRETE_3,
-        transaction_cost: float = 0.0,
+        transaction_cost: float = 0.0005,
         flat_threshold: float = 0.05,
     ) -> None:
         if gym is None:
