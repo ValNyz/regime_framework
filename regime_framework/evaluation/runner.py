@@ -439,10 +439,23 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         console.print(f"[cyan]Bagged predictors ({len(bagged)}):[/cyan] {bagged_str}")
     elif n_bags_classical > 1 or n_bags_rl > 1:
         # User asked for bagging but no eligible predictor got wrapped.
+        # Dump per-predictor diagnostic so we can see WHY each one was rejected.
         console.print(
             f"[yellow]WARN: n_bags_classical={n_bags_classical} / n_bags_rl={n_bags_rl} "
-            f"but no predictor was wrapped (none has predict_proba?).[/yellow]"
+            f"but no predictor was wrapped. Per-predictor diagnostic:[/yellow]"
         )
+        for p in out:
+            if isinstance(p, BaggingWrapper):
+                continue
+            has_proba = _has_predict_proba(p)
+            override_n = per_pred_override.get(p.name) if per_pred_override else None
+            family_default = n_bags_rl if p.family == "rl" else n_bags_classical
+            effective = override_n if override_n is not None else family_default
+            console.print(
+                f"  {p.name:25s} family={p.family:10s} "
+                f"has_predict_proba={has_proba} "
+                f"n_bags_resolved={effective}"
+            )
 
     return out
 
