@@ -383,6 +383,21 @@ class PredictorConfig:
     #     LinearQ-3: 1
     # 0 or unset for a name -> falls back to n_bags_classical / n_bags_rl.
     n_bags_per_predictor: dict[str, int] = field(default_factory=dict)
+    # Per-predictor retrain cadence (display name -> lifetime in bars). The
+    # predictor refits every ceil(lifetime / test_window_bars) folds. Bases
+    # with low variance (LogReg, Ridge) tolerate long lifetimes; high-variance
+    # ones (RandomForest) need short. Unset / 0 -> use the global
+    # cfg.split.retrain_every cadence. Example:
+    #   lifetime_per_predictor:
+    #     LogReg: 8640        # ~1 year, retrain rarely
+    #     RandomForest: 168   # ~1 week, retrain each fold (test=168)
+    #     LinearQ-3: 720      # ~30 days, retrain every 4 folds (test=168)
+    lifetime_per_predictor: dict[str, int] = field(default_factory=dict)
+    # When False, suppresses verbose training-progress prints from RL (linear
+    # FQI step checkpoints, NN tqdm bar) and torch-trained classifiers
+    # (MLP / GRU / LSTM / Transformer epoch loss). Top-line `predictor result`
+    # rows in the per-fold table are unaffected. Default True (current behavior).
+    training_progress: bool = True
     # When True, ensemble predictors quantile-normalize each base's proba to
     # uniform[0.5, 1.0] in max(proba) before averaging. Equalizes vote
     # influence across heterogeneous families (e.g. classical's near-one-hot

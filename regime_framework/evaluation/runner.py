@@ -207,9 +207,17 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     n_bags_classical = int(cfg.predictors.n_bags_classical)
     n_bags_rl = int(cfg.predictors.n_bags_rl)
     per_pred_override = cfg.predictors.n_bags_per_predictor or {}
+    show_progress = bool(cfg.predictors.training_progress)
+    # MLPPredictor accepts show_progress as a kwarg; LogReg/RF/ExtraTrees/
+    # XGBoost/LightGBM are sklearn-backed and don't print during fit.
+    classical_progress_kwargs = {
+        MLPPredictor: {"show_progress": show_progress},
+    }
 
     def _add_classical(cls, **kwargs):
         """Append a classical predictor, optionally wrapped in BaggingWrapper."""
+        # Add show_progress only for predictors that accept it.
+        kwargs = {**classical_progress_kwargs.get(cls, {}), **kwargs}
         out.append(_maybe_bag(cls, kwargs, n_bags_classical, cfg.seed, "classical", per_pred_override))
         if add_ft and getattr(cls, "supports_finetune", False):
             ft_kwargs = dict(kwargs, finetune=True)
@@ -217,6 +225,8 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
 
     def _add_plain(cls, **kwargs):
         """Append a predictor as-is (no bagging) — deep_nets / transformer."""
+        # GRU/LSTM/Transformer all accept show_progress.
+        kwargs = {"show_progress": show_progress, **kwargs}
         out.append(cls(**kwargs))
         if add_ft and getattr(cls, "supports_finetune", False):
             out.append(cls(finetune=True, **kwargs))
@@ -273,6 +283,7 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
             ft_steps_scale=rl_cfg.ft_steps_scale,
             proba_temperature=rl_cfg.proba_temperature,
             seed=cfg.seed,
+            show_progress=show_progress,
         )
         def _ts(override: int | None) -> int:
             """Per-approximator total_timesteps with shared fallback."""
@@ -659,6 +670,8 @@ class BenchmarkRunner:
         X_tr, y_tr, d_tr, df_tr,
         X_te, y_te, d_te, df_te,
         skip_fit: bool = False,
+        fold_idx: int = 0,
+        per_predictor_skip_fit: dict[str, bool] | None = None,
     ) -> tuple[list[PredictionResult], dict[str, np.ndarray]]:
         results: list[PredictionResult] = []
         per_predictor_predictions: dict[str, np.ndarray] = {}
@@ -710,10 +723,13 @@ class BenchmarkRunner:
 
         # ---- Pass 1: base predictors (also try predict_proba for ensemble) ----
         for predictor in base_predictors:
+            # Per-predictor skip override (lifetime_per_predictor) takes
+            # precedence over the global skip_fit; absent name -> default.
+            pred_skip = (per_predictor_skip_fit or {}).get(predictor.name, skip_fit)
             with console.status(f"[bold green]{predictor.name}[/bold green]"):
                 t0 = time.time()
                 try:
-                    if not skip_fit:
+                    if not pred_skip:
                         predictor.fit(X_tr, y_tr, d_tr, df_tr)
                     pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
                     _evaluate(predictor, pred_arr, t0)
@@ -922,6 +938,23 @@ class BenchmarkRunner:
                 f"  [cyan]retrain_every={retrain_every}[/cyan]: refit predictors "
                 f"every {retrain_every} folds; reuse the trained model in between."
             )
+
+        # Per-predictor lifetime override (in bars). For predictor P with
+        # lifetime L, retrain cadence (in folds) = max(1, L / test_window).
+        # P refits at fold k if (k % cadence) == 0; otherwise reuses the
+        # last-trained model. Empty / unset -> global retrain_every applies.
+        lifetime_map = cfg.predictors.lifetime_per_predictor or {}
+        test_window = max(1, int(cfg.split.test_window_bars))
+        pred_retrain_every: dict[str, int] = {}
+        for pred_name, lifetime_bars in lifetime_map.items():
+            cadence = max(1, int(lifetime_bars) // test_window)
+            pred_retrain_every[pred_name] = cadence
+        if pred_retrain_every:
+            summary = ", ".join(
+                f"{n}=every {c} folds" for n, c in pred_retrain_every.items()
+            )
+            console.print(f"  [cyan]lifetime_per_predictor:[/cyan] {summary}")
+
         fold_idx_in_loop = 0
 
         for train_idx, test_idx, fold_id in split_iter:
@@ -1047,9 +1080,21 @@ class BenchmarkRunner:
                     fold_d_end_rl=target_pre_d_rl.iloc[-1],
                 )
 
+            # Per-predictor skip override based on lifetime_per_predictor.
+            # `(fold_idx_in_loop - 1)` because we already incremented above
+            # before the loop body. Predictor refits at fold k iff
+            # (k % cadence_for_predictor) == 0.
+            current_fold_zero_indexed = fold_idx_in_loop - 1
+            per_pred_skip = {
+                name: (current_fold_zero_indexed % cadence) != 0
+                for name, cadence in pred_retrain_every.items()
+                if cadence > 1  # cadence=1 means refit every fold (no override needed)
+            }
             fold_results, fold_predictions = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te,
                 skip_fit=skip_fit,
+                fold_idx=current_fold_zero_indexed,
+                per_predictor_skip_fit=per_pred_skip,
             )
             # Capture this fold's trained instances for end-of-CV importance query.
             last_fold_predictors = predictors

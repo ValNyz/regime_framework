@@ -129,6 +129,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         finetune: bool = False,
         ft_epochs: int | None = None,
         ft_lr_scale: float = 0.5,
+        show_progress: bool = True,
     ) -> None:
         self.seq_len = int(seq_len)
         self.d_model = int(d_model)
@@ -145,6 +146,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
         self.name = self.base_name + ("-FT" if self.finetune else "")
         self.ft_epochs = int(ft_epochs) if ft_epochs is not None else max(self.epochs // 4, 5)
         self.ft_lr_scale = float(ft_lr_scale)
+        self.show_progress = bool(show_progress)
         self.scaler: StandardScaler | None = None
         self.model: _TST | None = None
 
@@ -199,7 +201,7 @@ class TimeSeriesTransformerPredictor(BasePredictor):
                     optimizer.step()
                 tot += float(loss.item()); n += 1
             scheduler.step()
-            if (epoch + 1) % log_every == 0 or epoch == 0:
+            if self.show_progress and ((epoch + 1) % log_every == 0 or epoch == 0):
                 print(f"      {self.name} epoch {epoch+1}/{epochs} loss={tot/max(n,1):.4f} lr={scheduler.get_last_lr()[0]:.2e}")
 
     def _cold_fit(self, X_train, y_train, dates_train, df_train):
@@ -215,7 +217,8 @@ class TimeSeriesTransformerPredictor(BasePredictor):
             dropout=self.dropout,
         ).to(device)
         n_params = sum(p.numel() for p in self.model.parameters())
-        print(f"      {self.name} parameters: {n_params/1e6:.2f}M  (device={device})")
+        if self.show_progress:
+            print(f"      {self.name} parameters: {n_params/1e6:.2f}M  (device={device})")
         self._train(loader, weight, device, lr=self.lr, epochs=self.epochs)
         return self
 

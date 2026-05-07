@@ -195,10 +195,11 @@ class _FQIRLBase(RLBasePredictor):
         envs = [self._build_env(f, c) for (f, c) in envs_data]
         transitions: list[tuple] = []
         steps_per_env = max(10, total_timesteps // len(envs))
-        print(
-            f"      {self.name} collecting transitions: "
-            f"{len(envs)} env(s) × {steps_per_env} steps = {len(envs)*steps_per_env}"
-        )
+        if self.show_progress:
+            print(
+                f"      {self.name} collecting transitions: "
+                f"{len(envs)} env(s) × {steps_per_env} steps = {len(envs)*steps_per_env}"
+            )
         for env_idx, env in enumerate(envs):
             obs, _ = env.reset()
             for _ in range(steps_per_env):
@@ -213,12 +214,14 @@ class _FQIRLBase(RLBasePredictor):
                     obs, _ = env.reset()
                 else:
                     obs = next_obs
-            if len(envs) > 1:
+            if self.show_progress and len(envs) > 1:
                 print(f"      {self.name} env {env_idx+1}/{len(envs)} done ({steps_per_env} steps)")
 
         # 2. FQI iterations on the collected transitions
         self._learner.fit_iteration(
-            transitions, n_iterations=self.iterations, progress_label=self.name,
+            transitions,
+            n_iterations=self.iterations,
+            progress_label=self.name if self.show_progress else None,
         )
 
     def _act(self, obs: np.ndarray):

@@ -62,6 +62,7 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         total_timesteps: int = 100000,
         ft_steps_scale: float = 0.5,
         proba_temperature: float | None = None,
+        show_progress: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__()  # MultiCoinAware initializes _target_coin_data etc.
@@ -77,6 +78,7 @@ class RLBasePredictor(MultiCoinAware, BasePredictor):
         self.flat_threshold = float(flat_threshold)
         self.total_timesteps = int(total_timesteps)
         self.ft_steps_scale = float(ft_steps_scale)
+        self.show_progress = bool(show_progress)
         # None = auto-calibrate temperature from std(Q) at predict_proba time.
         self.proba_temperature: float | None = (
             None if proba_temperature is None else float(proba_temperature)

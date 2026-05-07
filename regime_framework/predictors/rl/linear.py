@@ -149,10 +149,11 @@ class _LinearRLBase(RLBasePredictor):
         steps_per_env = max(1, total_timesteps // len(envs))
         # Print 5 progress checkpoints per env, regardless of steps_per_env size
         log_every = max(1, steps_per_env // 5)
-        print(
-            f"      {self.name} training: {len(envs)} env(s) × {steps_per_env} steps "
-            f"= {len(envs)*steps_per_env}"
-        )
+        if self.show_progress:
+            print(
+                f"      {self.name} training: {len(envs)} env(s) × {steps_per_env} steps "
+                f"= {len(envs)*steps_per_env}"
+            )
 
         for env_idx, env in enumerate(envs):
             obs, _ = env.reset()
@@ -168,7 +169,7 @@ class _LinearRLBase(RLBasePredictor):
                 self._learner.update(obs, action, reward, next_obs, terminated)
                 obs = next_obs
                 recent_rewards.append(float(reward))
-                if (step + 1) % log_every == 0 or step == steps_per_env - 1:
+                if self.show_progress and ((step + 1) % log_every == 0 or step == steps_per_env - 1):
                     mean_r = float(np.mean(recent_rewards[-log_every:]))
                     print(
                         f"      {self.name} env {env_idx+1}/{len(envs)} "

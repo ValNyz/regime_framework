@@ -63,6 +63,7 @@ class _SeqPredictor(BasePredictor):
         self, seq_len=64, hidden=128, n_layers=2, epochs=20, batch_size=4096,
         lr=1e-3, dropout=0.2,
         finetune: bool = False, ft_epochs: int | None = None, ft_lr_scale: float = 0.5,
+        show_progress: bool = True,
     ):
         self.seq_len = int(seq_len)
         self.hidden = int(hidden)
@@ -76,6 +77,7 @@ class _SeqPredictor(BasePredictor):
         self.name = self.base_name + ("-FT" if self.finetune else "")
         self.ft_epochs = int(ft_epochs) if ft_epochs is not None else max(self.epochs // 4, 5)
         self.ft_lr_scale = float(ft_lr_scale)
+        self.show_progress = bool(show_progress)
         self.scaler: StandardScaler | None = None
         self.model: _SeqRNN | None = None
 
@@ -125,7 +127,7 @@ class _SeqPredictor(BasePredictor):
                     loss.backward()
                     optimizer.step()
                 tot += float(loss.item()); n += 1
-            if (epoch + 1) % log_every == 0 or epoch == 0:
+            if self.show_progress and ((epoch + 1) % log_every == 0 or epoch == 0):
                 print(f"      {self.name} epoch {epoch+1}/{epochs} loss={tot/max(n,1):.4f}")
 
     def _cold_fit(self, X_train, y_train, dates_train, df_train):
