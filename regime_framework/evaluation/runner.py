@@ -30,6 +30,7 @@ from ..predictors.rule_based import RegimeV3Predictor, RegimeV4EmaPredictor
 from ..predictors.deep_nets import GRUPredictor, LSTMPredictor
 from ..predictors.transformer import TimeSeriesTransformerPredictor
 from ..predictors.ensemble import EnsemblePredictor, ConfidenceEnsemblePredictor
+from ..predictors.bagging import BaggingWrapper, _has_predict_proba
 from ..predictors.pretrained import PRETRAINED_REGISTRY
 from ..signal_analysis import rank_signals
 from ..visualization.regime_plots import save_label_plots, save_prediction_plots
@@ -106,6 +107,69 @@ def _resolve_cross_paths(
     return out
 
 
+def _make_classical_factory(cls, kwargs: dict):
+    """Factory for BaggingWrapper: instantiates a classical predictor and
+    mutates its underlying sklearn `clf.random_state` to the per-bag seed.
+
+    Why mutation instead of constructor arg: classical predictors hard-code
+    `random_state=42` in their __init__. Refactoring every constructor to
+    accept a seed kwarg is invasive; mutating .clf.random_state after build
+    is local and works for every sklearn-backed classifier (LogReg/RF/GBDT/
+    XGB/LGB). For predictors without `clf` (e.g. MLPPredictor with torch),
+    seed-driven variance is moot — bootstrap sampling carries the variance.
+    """
+    def factory(seed: int) -> BasePredictor:
+        inst = cls(**kwargs)
+        clf = getattr(inst, "clf", None)
+        if clf is not None and hasattr(clf, "random_state"):
+            clf.random_state = seed
+        return inst
+    return factory
+
+
+def _make_rl_factory(cls, kwargs: dict):
+    """Factory for BaggingWrapper: RL predictors accept seed= directly, so
+    we just splice it into the constructor kwargs (overrides cfg.seed)."""
+    def factory(seed: int) -> BasePredictor:
+        return cls(**{**kwargs, "seed": seed})
+    return factory
+
+
+def _maybe_bag(
+    cls,
+    kwargs: dict,
+    n_bags: int,
+    base_seed: int,
+    family: str,
+) -> BasePredictor:
+    """Wrap `cls(**kwargs)` in a BaggingWrapper when `n_bags > 1`, else return
+    a plain instance. Eligibility check skips predictors without predict_proba
+    (rule-based / pretrained zero-shot — bagging deterministic outputs is
+    pointless). family in {"classical", "rl"} controls bootstrap mode and
+    factory style.
+    """
+    plain = cls(**kwargs)
+    if n_bags <= 1 or not _has_predict_proba(plain):
+        return plain
+    if family == "rl":
+        factory = _make_rl_factory(cls, kwargs)
+        bootstrap = False  # bootstrap breaks RL trajectory order
+    else:
+        factory = _make_classical_factory(cls, kwargs)
+        bootstrap = True   # variance from row-level resampling
+    wrapper = BaggingWrapper(
+        base_factory=factory,
+        n_bags=n_bags,
+        base_seed=base_seed,
+        bootstrap=bootstrap,
+    )
+    # Pre-fill name/family so disabled-list filtering at build time still works.
+    wrapper.name = plain.name
+    wrapper.family = plain.family
+    wrapper.needs_features = getattr(plain, "needs_features", True)
+    return wrapper
+
+
 def _has_native_importance(predictor: BasePredictor) -> bool:
     """True iff predictor exposes cheap, native feature importance.
 
@@ -129,26 +193,36 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     out: list[BasePredictor] = []
     families = set(cfg.predictors.families)
     add_ft = bool(cfg.predictors.include_finetune)
+    n_bags_classical = int(cfg.predictors.n_bags_classical)
+    n_bags_rl = int(cfg.predictors.n_bags_rl)
 
-    def _add(cls, **kwargs):
+    def _add_classical(cls, **kwargs):
+        """Append a classical predictor, optionally wrapped in BaggingWrapper."""
+        out.append(_maybe_bag(cls, kwargs, n_bags_classical, cfg.seed, "classical"))
+        if add_ft and getattr(cls, "supports_finetune", False):
+            ft_kwargs = dict(kwargs, finetune=True)
+            out.append(_maybe_bag(cls, ft_kwargs, n_bags_classical, cfg.seed, "classical"))
+
+    def _add_plain(cls, **kwargs):
+        """Append a predictor as-is (no bagging) — deep_nets / transformer."""
         out.append(cls(**kwargs))
         if add_ft and getattr(cls, "supports_finetune", False):
             out.append(cls(finetune=True, **kwargs))
 
     if "classical" in families:
-        _add(LogRegPredictor)
-        _add(RandomForestPredictor)
-        _add(ExtraTreesPredictor)
-        _add(MLPPredictor)
-        _add(XGBoostPredictor)
-        _add(LightGBMPredictor)
+        _add_classical(LogRegPredictor)
+        _add_classical(RandomForestPredictor)
+        _add_classical(ExtraTreesPredictor)
+        _add_classical(MLPPredictor)
+        _add_classical(XGBoostPredictor)
+        _add_classical(LightGBMPredictor)
     if "rule_based" in families:
         out += [RegimeV3Predictor(), RegimeV4EmaPredictor()]
     if "deep_nets" in families:
-        _add(GRUPredictor)
-        _add(LSTMPredictor)
+        _add_plain(GRUPredictor)
+        _add_plain(LSTMPredictor)
     if "transformer" in families:
-        _add(TimeSeriesTransformerPredictor)
+        _add_plain(TimeSeriesTransformerPredictor)
     if "pretrained" in families:
         for model_name in cfg.predictors.pretrained_models:
             cls = PRETRAINED_REGISTRY.get(model_name)
@@ -260,9 +334,10 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         }
         for action_space in rl_cfg.action_spaces:
             for cls, kw in rl_classes.get(action_space, []):
-                out.append(cls(**kw))
+                out.append(_maybe_bag(cls, kw, n_bags_rl, cfg.seed, "rl"))
                 if add_ft and getattr(cls, "supports_finetune", False):
-                    out.append(cls(finetune=True, **kw))
+                    ft_kw = dict(kw, finetune=True)
+                    out.append(_maybe_bag(cls, ft_kw, n_bags_rl, cfg.seed, "rl"))
 
     # Auto-attach Ensemble + Ensemble-Conf whenever any probabilistic base
     # family is enabled. Both are just aggregators — make no sense without
@@ -276,8 +351,8 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     proba_families = {"classical", "deep_nets", "transformer", "rl"}
     if cfg.predictors.include_ensemble and (proba_families & families):
         global_normalize = bool(cfg.predictors.ensemble_normalize_proba)
-        _add(EnsemblePredictor, proba_normalize=global_normalize)
-        _add(ConfidenceEnsemblePredictor, proba_normalize=global_normalize)
+        _add_plain(EnsemblePredictor, proba_normalize=global_normalize)
+        _add_plain(ConfidenceEnsemblePredictor, proba_normalize=global_normalize)
 
         # Subset ensembles — one per entry in cfg.predictors.ensemble_groups.
         # Each produces Ensemble-{name} (and -FT) voting only over the named

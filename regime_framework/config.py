@@ -359,6 +359,16 @@ class PredictorConfig:
     #   disabled: [MLP-FT, Ensemble-trees-FT]
     # Skips those predictors entirely; same family / FT defaults otherwise.
     disabled: list[str] = field(default_factory=list)
+    # Bagging — train each eligible base predictor N times and average their
+    # probabilities. Gain = variance reduction; cost = N x training time.
+    # Eligibility = predict_proba returns non-None (excludes rule-based and
+    # pretrained zero-shot). Ensemble predictors are NEVER bagged (they are
+    # already aggregators). 1 = disabled.
+    #   classical: bootstrap row-resampling (LogReg/RF/GBDT/XGB/LGB/MLP/...)
+    #   rl       : seed variation only (LinearQ/DQN/SAC/...) — bootstrap
+    #              would break the temporal order of trajectories.
+    n_bags_classical: int = 1
+    n_bags_rl: int = 1
     # When True, ensemble predictors quantile-normalize each base's proba to
     # uniform[0.5, 1.0] in max(proba) before averaging. Equalizes vote
     # influence across heterogeneous families (e.g. classical's near-one-hot
