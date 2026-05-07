@@ -199,6 +199,24 @@ class CrossAssetSpec:
     name: str | None = None              # feature prefix; defaults to target.lower()
 
 
+@dataclass
+class BacktestConfig:
+    """Optional backtest stage parameters (consumed by `regime-run backtest`).
+
+    All fields default to None / sensible values so existing presets work
+    without modification. Override any field via a `backtest:` block in YAML.
+    """
+    user_data_dir: Path | None = None       # default: <repo_root>/user_data
+    datadir: Path | None = None             # default: cfg.paths.ohlcv.parent.parent
+    fee: float | None = None                # None = inherit predictors.evaluation_transaction_cost (per-side)
+    stake_currency: str | None = None       # None = derive from settle
+    pair: str | None = None                 # None = derive from (target, quote, settle, market_type)
+    max_open_trades: int = 1
+    dry_run_wallet: float = 10000.0
+    timerange: str | None = None            # None = derive from stitched OOS dates
+    divergence_warn_pct: float = 10.0
+
+
 def _parse_cross_spec(d: dict) -> CrossAssetSpec:
     """Build a CrossAssetSpec from a YAML dict, raising on missing target."""
     if "target" not in d:
@@ -461,6 +479,7 @@ class RunConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     cross: list[CrossAssetSpec] = field(default_factory=list)  # cross-asset side-channel features (0..N coins)
     plots: PlotConfig = field(default_factory=PlotConfig)
+    backtest: BacktestConfig = field(default_factory=BacktestConfig)  # consumed by `regime-run backtest`
     seed: int = 42
 
     @classmethod
@@ -587,6 +606,7 @@ class RunConfig:
             training=training_cfg,
             cross=cross_specs,
             plots=PlotConfig(**data.get("plots", {})),
+            backtest=BacktestConfig(**(data.get("backtest") or {})),
             seed=data.get("seed", 42),
         )
 

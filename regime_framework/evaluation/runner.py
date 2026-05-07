@@ -468,6 +468,12 @@ class BenchmarkRunner:
         # required by multi-coin-aware predictors (RL agents need price series
         # for reward; pretrained fine_tuned needs them for embedding).
         self._extra_coin_cache: dict[str, tuple[pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]] = {}
+        # Captured by _run_cv_single_mode for the `regime-run backtest`
+        # subcommand. Each maps cv_mode -> per-mode payload. Empty after a
+        # signals-only or pretrained-only run (those don't set them).
+        self._last_all_fold_preds: dict[str, list] = {}
+        self._last_stitched_metrics: dict[str, dict[str, dict]] = {}
+        self._last_top_predictors: dict[str, str] = {}
 
     def run(self) -> dict:
         cfg = self.cfg
@@ -535,9 +541,17 @@ class BenchmarkRunner:
         # Rolling mode is always CV regardless of cv_folds (folds derive from
         # train/test window sizes). For other modes, cv_folds > 0 triggers CV.
         if cfg.split.cv_mode == "rolling" or (cfg.split.cv_folds and cfg.split.cv_folds > 0):
-            return self._run_cv(cfg, df, X, y, dates, purge)
+            inner_result = self._run_cv(cfg, df, X, y, dates, purge)
         else:
-            return self._run_single_split(cfg, df, labels, X, y, dates, purge)
+            inner_result = self._run_single_split(cfg, df, labels, X, y, dates, purge)
+
+        # Augment the return with the per-mode captures used by `regime-run
+        # backtest`. Empty dicts in signals-only / pretrained-only paths.
+        if isinstance(inner_result, dict):
+            inner_result.setdefault("all_fold_preds_by_mode", self._last_all_fold_preds)
+            inner_result.setdefault("stitched_metrics_by_mode", self._last_stitched_metrics)
+            inner_result.setdefault("best_predictor_by_mode", self._last_top_predictors)
+        return inner_result
 
     def _run_single_split(self, cfg, df, labels, X, y, dates, purge: int) -> dict:
         X_tr, y_tr, d_tr, X_te, y_te, d_te = time_aware_split(
@@ -1334,6 +1348,25 @@ class BenchmarkRunner:
                 ranking = per_fold_df.groupby("predictor")["kappa"].mean()
             top_n = 5
             top_predictors = ranking.sort_values(ascending=False).head(top_n)
+
+            # Capture for `regime-run backtest`. all_fold_preds is normally
+            # GC'd at function return; we keep a reference on `self` so the
+            # CLI subcommand can pull the chosen predictor's stitched series
+            # without re-running the framework. Same for the per-predictor
+            # stitched metrics (already computed above) so the side-by-side
+            # report has a "framework" column without recomputation.
+            self._last_all_fold_preds[mode] = list(all_fold_preds)
+            self._last_stitched_metrics[mode] = {
+                pname: {
+                    "gain": stitched_gain.get(pname),
+                    "sharpe": stitched_sharpe.get(pname),
+                    "max_dd": stitched_max_dd.get(pname),
+                    "calmar": stitched_calmar.get(pname),
+                }
+                for pname in stitched_gain.keys()
+            }
+            self._last_top_predictors[mode] = str(top_predictors.index[0])
+
             # Build folds_per_predictor: dict[predictor_name → list of fold dicts]
             folds_per_predictor: dict[str, list[dict]] = {}
             for pred_name in top_predictors.index:

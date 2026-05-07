@@ -183,6 +183,211 @@ def pretrained(
     runner.run()
 
 
+def _load_cfg(preset_or_yaml: str) -> RunConfig:
+    """Try preset name first, then fall back to yaml path."""
+    p = Path(preset_or_yaml)
+    if p.suffix in (".yaml", ".yml") or p.exists():
+        return RunConfig.from_yaml(p)
+    return RunConfig.from_preset(preset_or_yaml)
+
+
+def _default_user_data_dir(cfg: RunConfig) -> Path:
+    """Default <repo_root>/user_data when not overridden."""
+    if cfg.backtest.user_data_dir is not None:
+        return Path(cfg.backtest.user_data_dir)
+    return Path(__file__).resolve().parents[1] / "user_data"
+
+
+def _default_datadir(cfg: RunConfig) -> Path:
+    """Default datadir = <ohlcv_path>.parent.parent (matches Freqtrade layout)."""
+    if cfg.backtest.datadir is not None:
+        return Path(cfg.backtest.datadir)
+    return Path(cfg.paths.ohlcv).parent.parent
+
+
+def _safe_class_name(predictor_name: str) -> str:
+    """Make a Python-class-safe identifier from a predictor display name."""
+    out = "".join(c if c.isalnum() else "_" for c in predictor_name)
+    if out and out[0].isdigit():
+        out = "_" + out
+    return out or "Regime"
+
+
+@app.command()
+def backtest(
+    preset_or_yaml: str = typer.Argument(..., help="Preset name OR yaml path"),
+    predictor: str = typer.Option(
+        None, "--predictor",
+        help="Predictor whose stitched OOS series to backtest. Default: top-1 by rank_by.",
+    ),
+    timerange: str = typer.Option(
+        None, "--timerange",
+        help="Freqtrade timerange (YYYYMMDD-YYYYMMDD). Default: stitched OOS span.",
+    ),
+    user_data_dir: Path = typer.Option(
+        None, "--user-data-dir",
+        help="Isolated freqtrade user_data dir. Default: <repo>/user_data.",
+    ),
+    datadir: Path = typer.Option(
+        None, "--datadir",
+        help="Freqtrade --datadir (where OHLCV feathers live). Default: cfg.paths.ohlcv.parent.parent.",
+    ),
+    mode: str = typer.Option(
+        "rolling", "--mode",
+        help="CV mode whose stitched predictions to backtest (rolling, walk_forward, ...).",
+    ),
+    force_rebuild: bool = typer.Option(
+        False, "--force-rebuild",
+        help="Re-run the framework even if the predictions feather exists.",
+    ),
+    export_strategy_only: bool = typer.Option(
+        False, "--export-strategy-only",
+        help="Generate strategy.py + freqtrade config.json but don't invoke freqtrade.",
+    ),
+):
+    """Backtest a predictor's stitched OOS predictions in freqtrade.
+
+    1. Run the framework (or load cached predictions feather).
+    2. Generate a self-contained freqtrade IStrategy + minimal config.json.
+    3. Spawn `freqtrade backtesting` and parse the resulting metrics.
+    4. Print a side-by-side report (framework stitched vs freqtrade).
+    """
+    import json as _json
+
+    cfg = _load_cfg(preset_or_yaml)
+    udd = (user_data_dir or _default_user_data_dir(cfg)).expanduser().resolve()
+    dd = (datadir or _default_datadir(cfg)).expanduser().resolve()
+    strategies_dir = udd / "strategies"
+    configs_dir = udd / "configs"
+    results_dir = udd / "backtest_results"
+    for d in (strategies_dir, configs_dir, results_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Predictions feather + manifest are keyed by (target, tf, predictor_name).
+    # When `predictor` is None we use a wildcard `auto` token; the resolved
+    # name is written into the manifest at first run and re-read on cache hit.
+    pred_token = predictor or "auto"
+    pred_path = strategies_dir / f"regime_pred_{cfg.target}_{cfg.timeframe}_{pred_token}.feather"
+    manifest_path = pred_path.with_suffix(".json")
+
+    if force_rebuild or not pred_path.exists() or not manifest_path.exists():
+        from .evaluation.runner import BenchmarkRunner
+        from .backtesting.predictions_export import dump_stitched_predictions
+
+        runner = BenchmarkRunner(cfg)
+        result = runner.run()
+        all_fold_preds_by_mode = result.get("all_fold_preds_by_mode") or {}
+        stitched_metrics_by_mode = result.get("stitched_metrics_by_mode") or {}
+        best_predictor_by_mode = result.get("best_predictor_by_mode") or {}
+
+        if mode not in all_fold_preds_by_mode:
+            available = sorted(all_fold_preds_by_mode.keys())
+            console.print(
+                f"[red]No CV results for mode={mode}.[/red] Available: {available}"
+            )
+            raise typer.Exit(1)
+
+        chosen = predictor or best_predictor_by_mode.get(mode)
+        if chosen is None:
+            console.print("[red]No predictor available; check that families produced output.[/red]")
+            raise typer.Exit(1)
+
+        # If the user used the wildcard token, rewrite the path to include
+        # the resolved name so the cache key is precise.
+        if predictor is None:
+            pred_path = strategies_dir / f"regime_pred_{cfg.target}_{cfg.timeframe}_{chosen}.feather"
+            manifest_path = pred_path.with_suffix(".json")
+
+        n_unique, oos_first, oos_last = dump_stitched_predictions(
+            all_fold_preds=all_fold_preds_by_mode[mode],
+            df=runner.df,
+            predictor_name=chosen,
+            out_path=pred_path,
+            manifest_path=manifest_path,
+            stitched_metrics=stitched_metrics_by_mode.get(mode, {}).get(chosen, {}),
+            cfg=cfg,
+        )
+        console.print(
+            f"  [green]Stitched predictions dumped:[/green] {pred_path} "
+            f"({n_unique} bars, {oos_first} → {oos_last})"
+        )
+    else:
+        manifest = _json.loads(manifest_path.read_text())
+        chosen = predictor or manifest.get("predictor")
+        if chosen is None:
+            console.print("[red]Manifest missing predictor field; re-run with --force-rebuild.[/red]")
+            raise typer.Exit(1)
+        console.print(f"  [cyan]Using cached predictions:[/cyan] {pred_path}")
+
+    # Render the strategy file
+    from .backtesting.strategy_template import write_strategy_file
+    class_name = f"RegimeStrategy_{cfg.target}_{cfg.timeframe}_{_safe_class_name(chosen)}"
+    can_short = (cfg.market_type == "futures")
+    strategy_path = write_strategy_file(
+        out_dir=strategies_dir,
+        class_name=class_name,
+        timeframe=cfg.timeframe,
+        can_short=can_short,
+        predictions_path=pred_path,
+        predictor_name=chosen,
+        target=cfg.target,
+        quote=cfg.quote,
+        settle=cfg.settle,
+        market_type=cfg.market_type,
+    )
+    console.print(f"  [green]Strategy written:[/green] {strategy_path}")
+
+    # Build + write the freqtrade config
+    from .backtesting.freqtrade_runner import (
+        build_freqtrade_config, write_freqtrade_config,
+        run_backtest, parse_backtest_result,
+    )
+    ft_config = build_freqtrade_config(
+        cfg, predictor_name=chosen, datadir=dd, user_data_dir=udd,
+    )
+    config_path = configs_dir / f"freqtrade_{cfg.target}_{cfg.timeframe}_{_safe_class_name(chosen)}.json"
+    write_freqtrade_config(ft_config, config_path)
+    console.print(f"  [green]Freqtrade config written:[/green] {config_path}")
+
+    if export_strategy_only:
+        console.print("[yellow]--export-strategy-only:[/yellow] skipping freqtrade subprocess.")
+        return
+
+    # Determine timerange
+    if not timerange:
+        timerange = cfg.backtest.timerange
+    if not timerange:
+        manifest = _json.loads(manifest_path.read_text())
+        oos_first = manifest["oos_first"]  # ISO datetime
+        oos_last = manifest["oos_last"]
+        timerange = (
+            oos_first.replace("-", "")[:8] + "-" + oos_last.replace("-", "")[:8]
+        )
+
+    export_path = results_dir / f"regime_{cfg.target}_{_safe_class_name(chosen)}.json"
+    try:
+        run_backtest(
+            strategy_class=class_name,
+            strategies_dir=strategies_dir,
+            config_path=config_path,
+            user_data_dir=udd,
+            datadir=dd,
+            timerange=timerange,
+            export_path=export_path,
+        )
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(2)
+
+    ft_metrics = parse_backtest_result(export_path, class_name)
+
+    # Side-by-side report
+    fw_metrics = _json.loads(manifest_path.read_text()).get("stitched_metrics") or {}
+    from .backtesting.report import format_side_by_side
+    table = format_side_by_side(fw_metrics, ft_metrics, cfg.backtest.divergence_warn_pct)
+    console.print(table)
+
+
 @app.command()
 def presets():
     """List available presets."""
