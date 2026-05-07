@@ -208,25 +208,29 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     n_bags_rl = int(cfg.predictors.n_bags_rl)
     per_pred_override = cfg.predictors.n_bags_per_predictor or {}
     show_progress = bool(cfg.predictors.training_progress)
-    # MLPPredictor accepts show_progress as a kwarg; LogReg/RF/ExtraTrees/
-    # XGBoost/LightGBM are sklearn-backed and don't print during fit.
-    classical_progress_kwargs = {
-        MLPPredictor: {"show_progress": show_progress},
+    # Predictors that accept a `show_progress` constructor kwarg. Ensembles
+    # don't print during fit (they aggregate pre-computed probas) so they
+    # are NOT in this set — passing show_progress to them raises TypeError.
+    progress_aware = {
+        MLPPredictor,
+        GRUPredictor, LSTMPredictor,
+        TimeSeriesTransformerPredictor,
     }
+
+    def _progress_kwargs(cls):
+        return {"show_progress": show_progress} if cls in progress_aware else {}
 
     def _add_classical(cls, **kwargs):
         """Append a classical predictor, optionally wrapped in BaggingWrapper."""
-        # Add show_progress only for predictors that accept it.
-        kwargs = {**classical_progress_kwargs.get(cls, {}), **kwargs}
+        kwargs = {**_progress_kwargs(cls), **kwargs}
         out.append(_maybe_bag(cls, kwargs, n_bags_classical, cfg.seed, "classical", per_pred_override))
         if add_ft and getattr(cls, "supports_finetune", False):
             ft_kwargs = dict(kwargs, finetune=True)
             out.append(_maybe_bag(cls, ft_kwargs, n_bags_classical, cfg.seed, "classical", per_pred_override))
 
     def _add_plain(cls, **kwargs):
-        """Append a predictor as-is (no bagging) — deep_nets / transformer."""
-        # GRU/LSTM/Transformer all accept show_progress.
-        kwargs = {"show_progress": show_progress, **kwargs}
+        """Append a predictor as-is (no bagging) — deep_nets / transformer / ensemble."""
+        kwargs = {**_progress_kwargs(cls), **kwargs}
         out.append(cls(**kwargs))
         if add_ft and getattr(cls, "supports_finetune", False):
             out.append(cls(finetune=True, **kwargs))
