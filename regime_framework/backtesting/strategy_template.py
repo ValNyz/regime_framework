@@ -54,6 +54,8 @@ class ${CLASS_NAME}(IStrategy):
     def _load_preds(self):
         if ${CLASS_NAME}._preds_cache is None:
             df = pd.read_feather(${CLASS_NAME}._PRED_PATH)
+            # Keep tz-aware UTC; precision is aligned dynamically at merge
+            # time to whatever freqtrade hands us (ms / us / ns).
             df["date"] = pd.to_datetime(df["date"], utc=True)
             ${CLASS_NAME}._preds_cache = (
                 df[["date", "label"]].sort_values("date").reset_index(drop=True)
@@ -61,9 +63,15 @@ class ${CLASS_NAME}(IStrategy):
         return ${CLASS_NAME}._preds_cache
 
     def populate_indicators(self, dataframe, metadata):
-        preds = self._load_preds()
+        preds = self._load_preds().copy()
         dataframe = dataframe.copy()
         dataframe["date"] = pd.to_datetime(dataframe["date"], utc=True)
+        # Align preds' datetime precision to freqtrade's OHLCV precision
+        # dynamically. pandas.merge_asof refuses joins across different
+        # datetime64 precisions (ms vs us vs ns), even when the wall-clock
+        # matches. We read whatever freqtrade gives us and follow it —
+        # so this strategy survives future pandas/freqtrade precision shifts.
+        preds["date"] = preds["date"].astype(dataframe["date"].dtype)
         # Backward merge_asof: at bar t, use the most recent label whose
         # timestamp <= t. Tolerance = 1 bar so we never carry a stale label
         # across data gaps.
