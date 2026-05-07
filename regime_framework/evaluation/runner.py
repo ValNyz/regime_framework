@@ -401,6 +401,22 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
                 f"[yellow]WARN: disabled names not in build (typos?): {not_found}[/yellow]"
             )
 
+    # Surface bagged predictors so a user can confirm at a glance whether
+    # n_bags_classical / n_bags_rl took effect (the wrapper is otherwise
+    # transparent: same name/family as the unbagged base).
+    bagged = [(p.name, p.n_bags, p.bootstrap) for p in out if isinstance(p, BaggingWrapper)]
+    if bagged:
+        bagged_str = ", ".join(
+            f"{name}[bag x{n}{'+bootstrap' if bs else ''}]" for name, n, bs in bagged
+        )
+        console.print(f"[cyan]Bagged predictors ({len(bagged)}):[/cyan] {bagged_str}")
+    elif n_bags_classical > 1 or n_bags_rl > 1:
+        # User asked for bagging but no eligible predictor got wrapped.
+        console.print(
+            f"[yellow]WARN: n_bags_classical={n_bags_classical} / n_bags_rl={n_bags_rl} "
+            f"but no predictor was wrapped (none has predict_proba?).[/yellow]"
+        )
+
     return out
 
 
