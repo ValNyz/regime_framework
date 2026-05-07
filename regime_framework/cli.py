@@ -374,6 +374,7 @@ def backtest(
             datadir=dd,
             timerange=timerange,
             export_path=export_path,
+            breakdown=cfg.backtest.breakdown,
         )
     except FileNotFoundError as e:
         console.print(f"[red]{e}[/red]")
@@ -381,11 +382,19 @@ def backtest(
 
     ft_metrics = parse_backtest_result(export_path, class_name)
 
-    # Side-by-side report
+    # Side-by-side report (framework stitched OOS vs freqtrade)
     fw_metrics = _json.loads(manifest_path.read_text()).get("stitched_metrics") or {}
-    from .backtesting.report import format_side_by_side
+    from .backtesting.report import format_side_by_side, format_breakdown
     table = format_side_by_side(fw_metrics, ft_metrics, cfg.backtest.divergence_warn_pct)
     console.print(table)
+
+    # Per-period breakdown (freqtrade-only — no framework counterpart yet)
+    breakdown_table = format_breakdown(
+        ft_metrics.get("periodic_breakdown") or {},
+        unit=cfg.backtest.breakdown,
+    )
+    if breakdown_table is not None:
+        console.print(breakdown_table)
 
 
 @app.command()

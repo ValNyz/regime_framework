@@ -14,6 +14,62 @@ from __future__ import annotations
 from rich.table import Table
 
 
+def format_breakdown(breakdown: dict, unit: str = "month") -> Table | None:
+    """Build a 4-column rich.Table of per-period freqtrade results.
+
+    `breakdown` shape (freqtrade 2026): either a dict {unit: list[dict]}
+    where each dict has keys like {date, profit_abs, profit_pct,
+    wins, draws, loses}, or directly a list[dict] when only one unit was
+    requested. We try both and degrade gracefully on schema variants.
+    """
+    if not breakdown:
+        return None
+    rows: list[dict] = []
+    if isinstance(breakdown, dict):
+        # Prefer the requested unit; fall back to anything non-empty.
+        for key in (unit, f"{unit}ly", f"{unit}s"):
+            v = breakdown.get(key)
+            if v:
+                rows = v if isinstance(v, list) else [v]
+                break
+        if not rows:
+            for k, v in breakdown.items():
+                if v:
+                    rows = v if isinstance(v, list) else [v]
+                    unit = k
+                    break
+    elif isinstance(breakdown, list):
+        rows = breakdown
+
+    if not rows:
+        return None
+
+    table = Table(title=f"Freqtrade backtest — {unit}ly breakdown", show_lines=False)
+    table.add_column(unit, style="cyan", no_wrap=True)
+    table.add_column("profit (abs)", justify="right")
+    table.add_column("profit %", justify="right")
+    table.add_column("trades", justify="right")
+    table.add_column("wins/draws/loses", justify="right")
+
+    for row in rows:
+        date = str(row.get("date") or row.get("period") or "?")[:10]
+        prof_abs = row.get("profit_abs") or row.get("rel_profit") or row.get("profit")
+        prof_pct = row.get("profit_pct") or row.get("profit_total_pct") or row.get("profit_percentage")
+        trades = row.get("trade_count") or row.get("trades") or row.get("total_trades")
+        wins = row.get("wins")
+        draws = row.get("draws")
+        loses = row.get("loses") or row.get("losses")
+        wdl = " / ".join(
+            str(int(x)) if x is not None else "?" for x in (wins, draws, loses)
+        )
+        prof_abs_str = f"{float(prof_abs):+8.2f}" if prof_abs is not None else "    --  "
+        prof_pct_str = f"{float(prof_pct) * 100:+6.2f}%" if prof_pct is not None else "  --  "
+        trades_str = str(int(trades)) if trades is not None else "--"
+        table.add_row(date, prof_abs_str, prof_pct_str, trades_str, wdl)
+
+    return table
+
+
 def _fmt_pct(v) -> str:
     if v is None:
         return "  --  "

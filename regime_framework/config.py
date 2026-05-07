@@ -212,9 +212,10 @@ class BacktestConfig:
     stake_currency: str | None = None       # None = derive from settle
     pair: str | None = None                 # None = derive from (target, quote, settle, market_type)
     max_open_trades: int = 1
-    dry_run_wallet: float = 10000.0
+    dry_run_wallet: float = 100.0
     timerange: str | None = None            # None = derive from stitched OOS dates
     divergence_warn_pct: float = 10.0
+    breakdown: str = "month"                # freqtrade --breakdown: day | week | month | year
 
 
 def _parse_cross_spec(d: dict) -> CrossAssetSpec:

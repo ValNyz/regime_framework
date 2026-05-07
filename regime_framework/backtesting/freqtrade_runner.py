@@ -122,11 +122,16 @@ def run_backtest(
     datadir: Path,
     timerange: str,
     export_path: Path,
+    breakdown: str | None = None,
 ) -> int:
     """Spawn `freqtrade backtesting` synchronously. Returns its exit code.
 
     Streams freqtrade's stdout/stderr to the parent terminal directly
     (no buffering — long backtests print incremental progress).
+
+    breakdown: when set, passes `--breakdown <value>` (day | week | month |
+    year) so freqtrade prints a per-period summary table at the end of the
+    run AND embeds the breakdown into the result JSON (parsed downstream).
 
     Raises FileNotFoundError when freqtrade is not on PATH.
     Raises RuntimeError when freqtrade exits non-zero.
@@ -149,6 +154,8 @@ def run_backtest(
         "--export", "trades",
         "--export-filename", str(Path(export_path).resolve()),
     ]
+    if breakdown:
+        cmd += ["--breakdown", breakdown]
     print("  $ " + " ".join(cmd))
     # shell=False (default): list-of-args is safe — no shell interpolation.
     completed = subprocess.run(cmd, shell=False, check=False)
@@ -260,6 +267,18 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
                 return v
         return default
 
+    # Periodic breakdown — present when `--breakdown <unit>` was passed.
+    # Freqtrade stores it as `periodic_breakdown` (newer) or
+    # `daily_profit` / `weekly_profit` / `monthly_profit` (older).
+    breakdown = _get("periodic_breakdown")
+    if not breakdown:
+        # Older shape — gather any per-period buckets that exist
+        breakdown = {
+            unit: _get(f"{unit}_profit") or _get(f"{unit}ly_profit")
+            for unit in ("day", "week", "month", "year")
+        }
+        breakdown = {k: v for k, v in breakdown.items() if v}
+
     return {
         "profit_total": _get("profit_total"),
         "profit_total_pct": _get("profit_total_pct", "profit_total_percentage"),
@@ -272,4 +291,7 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
         ),
         "total_trades": _get("total_trades", "trade_count"),
         "expectancy": _get("expectancy"),
+        "starting_balance": _get("starting_balance"),
+        "final_balance": _get("final_balance"),
+        "periodic_breakdown": breakdown or {},
     }
