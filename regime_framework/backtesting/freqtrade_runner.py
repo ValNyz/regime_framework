@@ -160,39 +160,92 @@ def run_backtest(
     return completed.returncode
 
 
+def _find_freqtrade_result(export_path: Path) -> Path | None:
+    """Locate the freqtrade backtest-result JSON written by the most recent run.
+
+    Strategy (in order):
+      1. The explicit export_path (works on freqtrade versions where
+         --export-filename still has an effect).
+      2. `<results_dir>/.last_result.json` — freqtrade's pointer to the
+         latest result, written every backtest. We follow `latest_backtest`
+         to the actual zip / json.
+      3. The most recent `backtest-result-*.zip` in <results_dir>, by mtime.
+    """
+    export_path = Path(export_path)
+    results_dir = export_path.parent
+
+    # 1. Explicit path (legacy freqtrade)
+    if export_path.exists():
+        return export_path
+    zip_path = export_path.with_suffix(".zip")
+    if zip_path.exists():
+        return zip_path
+
+    # 2. .last_result.json pointer
+    last_result = results_dir / ".last_result.json"
+    if last_result.exists():
+        try:
+            ptr = json.loads(last_result.read_text())
+            latest_name = ptr.get("latest_backtest")
+            if latest_name:
+                latest = results_dir / latest_name
+                if latest.exists():
+                    return latest
+                # .last_result.json sometimes points to the .json sibling;
+                # try the .zip too.
+                zip_sibling = latest.with_suffix(".zip")
+                if zip_sibling.exists():
+                    return zip_sibling
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 3. Most recent backtest-result-*.zip
+    candidates = sorted(
+        results_dir.glob("backtest-result-*.zip"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+
+    return None
+
+
 def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, Any]:
     """Read freqtrade's exported result JSON and return key headline metrics.
 
-    Freqtrade's --export-filename writes `<name>.json` (a JSON pointer file)
-    plus `<name>.zip` containing the actual results. The shape varies by
-    freqtrade version; we look for the strategy stats under several known
-    paths and return None for fields that don't exist.
+    Locates the result file via _find_freqtrade_result (handles old explicit
+    path, freqtrade 2026's .last_result.json pointer, and bare timestamped
+    zips as fallback). The shape varies by freqtrade version; we look for
+    strategy stats under several known keys and return None for missing ones.
     """
-    export_path = Path(export_path)
-    candidates: list[Path] = []
-    if export_path.suffix == ".json" and export_path.exists():
-        candidates.append(export_path)
-    zip_path = export_path.with_suffix(".zip")
-    if zip_path.exists():
-        with zipfile.ZipFile(zip_path) as zf:
-            for name in zf.namelist():
-                if name.endswith(".json"):
-                    extracted = export_path.parent / name
-                    extracted.parent.mkdir(parents=True, exist_ok=True)
-                    extracted.write_bytes(zf.read(name))
-                    candidates.append(extracted)
+    located = _find_freqtrade_result(Path(export_path))
+    if located is None:
+        results_dir = Path(export_path).parent
+        listing = "\n  ".join(sorted(p.name for p in results_dir.glob("*"))[:20])
+        raise RuntimeError(
+            f"Could not locate freqtrade backtest result near {export_path}.\n"
+            f"Looked in {results_dir}; first 20 entries:\n  {listing or '(empty)'}"
+        )
 
     payload = None
-    for cand in candidates:
+    if located.suffix == ".zip":
+        # Freqtrade zip contains backtest-result-<TS>.json (the real payload)
+        # plus _config.json + _market_change.feather + the strategy source.
+        with zipfile.ZipFile(located) as zf:
+            for name in zf.namelist():
+                if name.endswith(".json") and "config" not in name and "meta" not in name:
+                    payload = json.loads(zf.read(name).decode("utf-8"))
+                    break
+    elif located.suffix == ".json":
         try:
-            payload = json.loads(cand.read_text())
-            break
-        except (json.JSONDecodeError, FileNotFoundError):
-            continue
+            payload = json.loads(located.read_text())
+        except (json.JSONDecodeError, OSError):
+            payload = None
 
     if payload is None:
         raise RuntimeError(
-            f"Could not locate freqtrade backtest result JSON near {export_path}."
+            f"Located {located} but could not extract a JSON payload from it."
         )
 
     strat = (payload.get("strategy") or {}).get(strategy_class) or {}
