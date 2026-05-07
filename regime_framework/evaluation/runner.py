@@ -138,17 +138,28 @@ def _make_rl_factory(cls, kwargs: dict):
 def _maybe_bag(
     cls,
     kwargs: dict,
-    n_bags: int,
+    default_n_bags: int,
     base_seed: int,
     family: str,
+    per_predictor_override: dict[str, int] | None = None,
 ) -> BasePredictor:
     """Wrap `cls(**kwargs)` in a BaggingWrapper when `n_bags > 1`, else return
     a plain instance. Eligibility check skips predictors without predict_proba
     (rule-based / pretrained zero-shot — bagging deterministic outputs is
     pointless). family in {"classical", "rl"} controls bootstrap mode and
     factory style.
+
+    `per_predictor_override` takes precedence over `default_n_bags` when the
+    predictor's display name matches a key. Use for fine bias-variance tuning
+    per base (e.g. RandomForest=1 because already bagged internally, LogReg=5
+    because pure-deterministic L-BFGS gains from bootstrap).
     """
     plain = cls(**kwargs)
+    n_bags = default_n_bags
+    if per_predictor_override:
+        # Display name (LogReg-FT, RandomForest, etc.) lookup first; allow
+        # overriding cold and FT independently.
+        n_bags = int(per_predictor_override.get(plain.name, default_n_bags))
     if n_bags <= 1 or not _has_predict_proba(plain):
         return plain
     if family == "rl":
@@ -195,13 +206,14 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
     add_ft = bool(cfg.predictors.include_finetune)
     n_bags_classical = int(cfg.predictors.n_bags_classical)
     n_bags_rl = int(cfg.predictors.n_bags_rl)
+    per_pred_override = cfg.predictors.n_bags_per_predictor or {}
 
     def _add_classical(cls, **kwargs):
         """Append a classical predictor, optionally wrapped in BaggingWrapper."""
-        out.append(_maybe_bag(cls, kwargs, n_bags_classical, cfg.seed, "classical"))
+        out.append(_maybe_bag(cls, kwargs, n_bags_classical, cfg.seed, "classical", per_pred_override))
         if add_ft and getattr(cls, "supports_finetune", False):
             ft_kwargs = dict(kwargs, finetune=True)
-            out.append(_maybe_bag(cls, ft_kwargs, n_bags_classical, cfg.seed, "classical"))
+            out.append(_maybe_bag(cls, ft_kwargs, n_bags_classical, cfg.seed, "classical", per_pred_override))
 
     def _add_plain(cls, **kwargs):
         """Append a predictor as-is (no bagging) — deep_nets / transformer."""
@@ -334,10 +346,10 @@ def _build_predictors(cfg: RunConfig) -> list[BasePredictor]:
         }
         for action_space in rl_cfg.action_spaces:
             for cls, kw in rl_classes.get(action_space, []):
-                out.append(_maybe_bag(cls, kw, n_bags_rl, cfg.seed, "rl"))
+                out.append(_maybe_bag(cls, kw, n_bags_rl, cfg.seed, "rl", per_pred_override))
                 if add_ft and getattr(cls, "supports_finetune", False):
                     ft_kw = dict(kw, finetune=True)
-                    out.append(_maybe_bag(cls, ft_kw, n_bags_rl, cfg.seed, "rl"))
+                    out.append(_maybe_bag(cls, ft_kw, n_bags_rl, cfg.seed, "rl", per_pred_override))
 
     # Auto-attach Ensemble + Ensemble-Conf whenever any probabilistic base
     # family is enabled. Both are just aggregators — make no sense without

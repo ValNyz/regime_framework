@@ -369,6 +369,20 @@ class PredictorConfig:
     #              would break the temporal order of trajectories.
     n_bags_classical: int = 1
     n_bags_rl: int = 1
+    # Per-predictor override (display name -> bag count). Takes precedence
+    # over n_bags_classical / n_bags_rl. Use to encode bias-variance per
+    # predictor: low-variance bases (LogReg, Ridge) gain from bag>=5;
+    # already-bagged bases (RandomForest, ExtraTrees) prefer bag=1; RL
+    # bases want either bag=1 (single seed) or bag>=10 (LLN damping) but
+    # not bag~5 (worst of both worlds). Example:
+    #   n_bags_per_predictor:
+    #     LogReg: 5
+    #     LogReg-FT: 5
+    #     RandomForest: 1
+    #     LinearQ-2: 1
+    #     LinearQ-3: 1
+    # 0 or unset for a name -> falls back to n_bags_classical / n_bags_rl.
+    n_bags_per_predictor: dict[str, int] = field(default_factory=dict)
     # When True, ensemble predictors quantile-normalize each base's proba to
     # uniform[0.5, 1.0] in max(proba) before averaging. Equalizes vote
     # influence across heterogeneous families (e.g. classical's near-one-hot
