@@ -389,16 +389,40 @@ def backtest(
         console.print("[yellow]--export-strategy-only:[/yellow] skipping freqtrade subprocess.")
         return
 
-    # Determine timerange
+    # Determine timerange.
+    # Priority: CLI --timerange > cfg.backtest.timerange > derived from FEATHER.
+    # We read from the feather itself (source of truth) rather than the
+    # manifest: a previous bug had stale manifests survive cache hits, which
+    # produced a freqtrade --timerange far narrower than the actual feather
+    # span (= silent loss of most trades). The feather can't lie — if a label
+    # row exists at date X, X belongs in the OOS span.
     if not timerange:
         timerange = cfg.backtest.timerange
     if not timerange:
-        manifest = _json.loads(manifest_path.read_text())
-        oos_first = manifest["oos_first"]  # ISO datetime
-        oos_last = manifest["oos_last"]
-        timerange = (
-            oos_first.replace("-", "")[:8] + "-" + oos_last.replace("-", "")[:8]
-        )
+        import pandas as _pd
+        _feather = _pd.read_feather(pred_path)
+        _dates = _pd.to_datetime(_feather["date"], utc=True)
+        oos_first = _dates.min().strftime("%Y%m%d")
+        oos_last = _dates.max().strftime("%Y%m%d")
+        timerange = f"{oos_first}-{oos_last}"
+        # Reconcile manifest if it disagrees — silent stale manifests are
+        # what bit us before; surface the divergence loudly.
+        try:
+            _mf = _json.loads(manifest_path.read_text())
+            _mf_first = (_mf.get("oos_first") or "").replace("-", "")[:8]
+            _mf_last = (_mf.get("oos_last") or "").replace("-", "")[:8]
+            if (_mf_first, _mf_last) != (oos_first, oos_last):
+                console.print(
+                    f"  [yellow]WARN[/yellow] manifest OOS span "
+                    f"({_mf_first}-{_mf_last}) disagrees with feather "
+                    f"({oos_first}-{oos_last}); using feather."
+                )
+                _mf["oos_first"] = _dates.min().isoformat()
+                _mf["oos_last"] = _dates.max().isoformat()
+                manifest_path.write_text(_json.dumps(_mf, indent=2))
+        except (FileNotFoundError, KeyError, ValueError):
+            pass
+    console.print(f"  [cyan]Freqtrade --timerange:[/cyan] {timerange}")
 
     export_path = results_dir / f"regime_{cfg.target}_{_safe_class_name(chosen)}.json"
     try:
