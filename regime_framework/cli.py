@@ -384,7 +384,10 @@ def backtest(
     )
     if effective_proba_threshold > 0.0:
         # Quick scan from manifest so the user knows roughly how many bars
-        # the filter will keep before launching freqtrade.
+        # the filter will keep before launching freqtrade. Framework metrics
+        # are re-derived from the feather below so no stale-manifest WARN
+        # is needed here — the side-by-side always reflects the current
+        # threshold by construction.
         try:
             _mf = _json.loads(manifest_path.read_text())
             _stats = (_mf.get("confidence_stats") or {})
@@ -395,20 +398,6 @@ def backtest(
                 console.print(
                     f"  [cyan]Confidence filter:[/cyan] threshold={effective_proba_threshold:.3f}, "
                     f"~{_frac*100:.0f}% of bars survive (manifest bucket {_closest})"
-                )
-            # Flag stale framework metrics: stitched_metrics in the manifest
-            # were computed at proba_threshold_used. If the CLI overrides
-            # that to a different value, the side-by-side framework column
-            # is no longer comparable to the freqtrade run.
-            _used = float(_mf.get("proba_threshold_used", 0.0) or 0.0)
-            if abs(_used - effective_proba_threshold) > 1e-6:
-                console.print(
-                    f"  [yellow]WARN[/yellow] framework stitched_metrics were "
-                    f"computed at proba_threshold={_used:.3f}, but freqtrade will "
-                    f"use {effective_proba_threshold:.3f}. The side-by-side "
-                    f"comparison will diverge for this reason alone — pass "
-                    f"--force-rebuild to recompute framework metrics at the "
-                    f"new threshold."
                 )
         except (FileNotFoundError, ValueError):
             pass
@@ -483,21 +472,31 @@ def backtest(
 
     ft_metrics = parse_backtest_result(export_path, class_name)
 
-    # Side-by-side report (framework stitched OOS vs freqtrade)
-    fw_metrics = _json.loads(manifest_path.read_text()).get("stitched_metrics") or {}
-    # Backfill n_trades from the predictions feather when the manifest pre-dates
-    # the count_trades commit. Cheap (single np.diff over <10k rows).
-    if fw_metrics.get("n_trades") is None and pred_path.exists():
-        try:
-            import pandas as _pd
-            from .evaluation.metrics import count_trades as _count_trades
-            _df = _pd.read_feather(pred_path)
-            fw_metrics["n_trades"] = _count_trades(
-                _df["label"].to_numpy(),
-                long_only=(cfg.market_type == "spot"),
-            )
-        except Exception:
-            pass
+    # Side-by-side report (framework stitched OOS vs freqtrade).
+    # Always re-derive framework metrics from the feather at the effective
+    # threshold rather than trusting the manifest. Reason: the manifest's
+    # stitched_metrics was computed once, at framework-run time, against
+    # whatever threshold was active then. If the CLI changed it (--proba-
+    # threshold), the manifest is stale and the divergence column would
+    # lie. Recomputing here is ~ms (5 helpers over <10k bars) and keeps
+    # the comparison apples-to-apples by construction.
+    from .backtesting.predictions_export import (
+        recompute_stitched_metrics_from_feather,
+    )
+    try:
+        fw_metrics = recompute_stitched_metrics_from_feather(
+            pred_path,
+            proba_threshold=effective_proba_threshold,
+            timeframe=cfg.timeframe,
+            transaction_cost=float(cfg.predictors.evaluation_transaction_cost),
+            long_only=(cfg.market_type == "spot"),
+        )
+    except Exception as e:
+        console.print(
+            f"  [yellow]WARN[/yellow] could not recompute framework metrics "
+            f"from feather ({e}); falling back to manifest."
+        )
+        fw_metrics = _json.loads(manifest_path.read_text()).get("stitched_metrics") or {}
     from .backtesting.report import format_side_by_side, format_breakdown
     table = format_side_by_side(fw_metrics, ft_metrics, cfg.backtest.divergence_warn_pct)
     console.print(table)

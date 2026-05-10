@@ -165,3 +165,59 @@ def dump_stitched_predictions(
     manifest_path.write_text(json.dumps(manifest, indent=2, default=str))
 
     return n_unique, oos_first, oos_last
+
+
+def recompute_stitched_metrics_from_feather(
+    pred_path: Path,
+    *,
+    proba_threshold: float,
+    timeframe: str,
+    transaction_cost: float,
+    long_only: bool,
+) -> dict:
+    """Re-compute (gain, sharpe, max_dd, calmar, n_trades) from a cached
+    predictions feather at a fresh `proba_threshold`.
+
+    The feather already stores RAW (unfiltered) labels + a per-bar
+    confidence column, so we don't need to rerun the framework: just
+    re-apply the threshold and re-derive the stitched metrics. Used by
+    `regime-run backtest` to keep the framework side of the side-by-side
+    comparison aligned with whatever threshold freqtrade is using on this
+    run — even when the manifest's baked-in metrics were computed at a
+    different (or zero) threshold.
+
+    Mirrors the per-predictor stitched block in evaluation/runner.py so
+    the numbers match exactly what `regime-run run` would produce.
+    """
+    df = pd.read_feather(pred_path)
+    if "confidence" not in df.columns:
+        df = df.assign(confidence=1.0)
+    labels = df["label"].astype(object).to_numpy()
+    if proba_threshold > 0.0:
+        weak = df["confidence"].to_numpy(dtype=np.float64) < proba_threshold
+        if weak.any():
+            labels = labels.copy()
+            labels[weak] = ""
+    closes = df["close"].to_numpy(dtype=np.float64)
+    # Defer the metrics import to keep predictions_export.py importable in
+    # environments that haven't pulled in evaluation deps (e.g. UI-only).
+    from ..evaluation.metrics import (
+        synth_equity_curve, sharpe_ratio, max_drawdown,
+        calmar_ratio, count_trades, periods_per_year,
+    )
+    ppy = periods_per_year(timeframe)
+    eq, gain = synth_equity_curve(
+        closes, labels, transaction_cost=transaction_cost, long_only=long_only,
+    )
+    dd = max_drawdown(eq)
+    return {
+        "gain": float(gain),
+        "sharpe": float(sharpe_ratio(
+            closes, labels,
+            periods_per_year=ppy, transaction_cost=transaction_cost,
+            long_only=long_only,
+        )),
+        "max_dd": float(dd),
+        "calmar": float(calmar_ratio(gain, dd)),
+        "n_trades": int(count_trades(labels, long_only=long_only)),
+    }
