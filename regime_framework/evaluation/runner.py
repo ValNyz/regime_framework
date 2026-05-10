@@ -499,6 +499,27 @@ class BenchmarkRunner:
         console.print(f"[bold]Loading OHLCV[/bold] from {cfg.paths.ohlcv}")
         df = load_ohlcv(cfg.paths.ohlcv)
         console.print(f"  {len(df)} bars  {df['date'].iloc[0]} → {df['date'].iloc[-1]}")
+
+        # Optional CLI-injected slice (`--data-timerange YYYYMMDD-YYYYMMDD`)
+        # Applied right after load so labels / features / CV all see the
+        # same restricted data. Useful for testing on a specific period.
+        tr = getattr(cfg.split, "data_timerange", None)
+        if tr:
+            try:
+                start_str, end_str = tr.split("-")
+                start = pd.to_datetime(start_str, utc=True)
+                end = pd.to_datetime(end_str, utc=True)
+                dates_utc = pd.to_datetime(df["date"], utc=True)
+                mask = (dates_utc >= start) & (dates_utc < end)
+                df = df.loc[mask].reset_index(drop=True)
+                console.print(
+                    f"  [cyan]data_timerange[/cyan]={tr}: sliced to {len(df)} bars "
+                    f"({df['date'].iloc[0]} → {df['date'].iloc[-1]})"
+                )
+            except (ValueError, IndexError) as e:
+                console.print(
+                    f"[yellow]WARN: data_timerange={tr!r} invalid, ignored: {e}[/yellow]"
+                )
         self.df = df
 
         # ----- 2. Labels -----

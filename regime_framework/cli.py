@@ -244,6 +244,28 @@ def backtest(
         False, "--export-strategy-only",
         help="Generate strategy.py + freqtrade config.json but don't invoke freqtrade.",
     ),
+    cv_folds: int = typer.Option(
+        0, "--cv-folds", "-k",
+        help="Cap the number of CV folds. 0 = use cfg.split.cv_folds. "
+             "In rolling mode, keeps the LATEST N folds (most recent OOS span).",
+    ),
+    train_window_bars: int = typer.Option(
+        0, "--train-window-bars",
+        help="Override cfg.split.train_window_bars (rolling mode).",
+    ),
+    test_window_bars: int = typer.Option(
+        0, "--test-window-bars",
+        help="Override cfg.split.test_window_bars (rolling mode).",
+    ),
+    step_bars: int = typer.Option(
+        0, "--step-bars",
+        help="Override cfg.split.step_bars (rolling). 0 = same as test_window.",
+    ),
+    data_timerange: str = typer.Option(
+        None, "--data-timerange",
+        help="Slice the loaded OHLCV to YYYYMMDD-YYYYMMDD before CV. Use to "
+             "test the framework on a specific historical period (e.g. bull).",
+    ),
 ):
     """Backtest a predictor's stitched OOS predictions in freqtrade.
 
@@ -255,6 +277,20 @@ def backtest(
     import json as _json
 
     cfg = _load_cfg(preset_or_yaml)
+    # Apply CLI overrides on the CV split BEFORE the framework runs so that
+    # the predictions feather is computed against the chosen window/period.
+    if cv_folds > 0:
+        cfg.split.cv_folds = cv_folds
+    if train_window_bars > 0:
+        cfg.split.train_window_bars = train_window_bars
+    if test_window_bars > 0:
+        cfg.split.test_window_bars = test_window_bars
+    if step_bars > 0:
+        cfg.split.step_bars = step_bars
+    if data_timerange:
+        # Stash the timerange on cfg.split so BenchmarkRunner can apply it
+        # right after load_ohlcv. Format: YYYYMMDD-YYYYMMDD (open right end).
+        cfg.split.data_timerange = data_timerange
     udd = (user_data_dir or _default_user_data_dir(cfg)).expanduser().resolve()
     dd = (datadir or _default_datadir(cfg)).expanduser().resolve()
     strategies_dir = udd / "strategies"

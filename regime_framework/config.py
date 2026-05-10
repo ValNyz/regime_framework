@@ -145,6 +145,11 @@ class SplitConfig:
     # "never retrain" (stable but stale). Multi-coin data is also only
     # pushed on the folds that actually train.
     retrain_every: int = 1
+    # Optional CLI-injected timerange filter applied right after load_ohlcv,
+    # before labelling / features / CV. Format: "YYYYMMDD-YYYYMMDD" (open
+    # right end). Use to test the framework on a specific historical period
+    # (e.g. "20240101-20240701" for the 2024 H1 bull). None = use full data.
+    data_timerange: str | None = None
 
 
 @dataclass
