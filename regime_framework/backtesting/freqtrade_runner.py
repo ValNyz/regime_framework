@@ -177,6 +177,15 @@ def run_backtest(
         "--datadir", str(Path(datadir).resolve()),
         "--timerange", timerange,
         "--export", "trades",
+        # CRITICAL: --cache none disables freqtrade's per-day indicator
+        # cache. With --cache day (default), freqtrade reuses populate_*
+        # outputs from previous backtests if the day overlaps — meaning
+        # when you regenerate the predictions feather, the OLD signals
+        # are still served on overlapping days. Result: silent stale
+        # backtests where only the new days actually trade. Disabling the
+        # cache forces a full re-evaluation of populate_indicators with
+        # the freshly-rendered strategy + feather every run.
+        "--cache", "none",
         # Note: --export-filename is deprecated since freqtrade 2026.x; the
         # backtest result lands under <user_data_dir>/backtest_results/ with
         # a timestamped name, then resolved by parse_backtest_result via
