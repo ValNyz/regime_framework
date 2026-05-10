@@ -2,10 +2,12 @@
 
 The stitching logic mirrors `evaluation/runner.py:1240-1253` — we concatenate
 each fold's predictions by date, dedupe overlapping bars (rolling CV with
-step < test_window can produce overlap), and emit a 3-column feather:
-[date, label, close]. Labels are kept as strings ("bull"/"bear"/""): the
-freqtrade strategy does string comparison on them at runtime — no numeric
-encoding needed.
+step < test_window can produce overlap), and emit a 4-column feather:
+[date, label, close, confidence]. Labels are kept as strings ("bull"/"bear"/"")
+— the freqtrade strategy does string comparison on them at runtime. The
+`confidence` column is the per-bar max class probability (1.0 when the
+predictor lacks predict_proba); the strategy consumes it via the
+`cfg.backtest.proba_threshold` filter to discard weak signals.
 
 A sidecar JSON manifest records cache invalidation hints + framework metrics
 so the side-by-side report can compare without re-running.
@@ -70,17 +72,25 @@ def dump_stitched_predictions(
 
     Raises ValueError when no fold contains the requested predictor.
     """
-    preds_list, dates_list, closes_list = [], [], []
+    preds_list, dates_list, closes_list, confs_list = [], [], [], []
     for fp in all_fold_preds:
         if predictor_name not in fp["predictions"]:
             continue
-        preds_list.append(np.asarray(fp["predictions"][predictor_name]))
+        pred_arr = np.asarray(fp["predictions"][predictor_name])
+        preds_list.append(pred_arr)
         dates_list.append(np.asarray(fp["d_te"].values))
         if "close" in df.columns:
             cl = df.loc[fp["test_index"], "close"].to_numpy(dtype=np.float64)
             closes_list.append(cl)
         else:
             closes_list.append(np.full(len(fp["d_te"]), np.nan, dtype=np.float64))
+        # Confidence is optional (older runs / predictors without predict_proba):
+        # default to 1.0 so the downstream threshold filter is a no-op.
+        conf = (fp.get("confidences") or {}).get(predictor_name)
+        if conf is None:
+            confs_list.append(np.ones(len(pred_arr), dtype=np.float64))
+        else:
+            confs_list.append(np.asarray(conf, dtype=np.float64))
 
     if not preds_list:
         raise ValueError(
@@ -91,11 +101,13 @@ def dump_stitched_predictions(
     preds_concat = np.concatenate(preds_list)
     dates_concat = pd.to_datetime(np.concatenate(dates_list), utc=True)
     closes_concat = np.concatenate(closes_list)
+    confs_concat = np.concatenate(confs_list)
 
     out = pd.DataFrame({
         "date": dates_concat,
         "label": preds_concat.astype(str),
         "close": closes_concat,
+        "confidence": confs_concat,
     })
     # Rolling CV with step < test_window produces overlapping OOS windows.
     # Keep the LAST occurrence (= freshest model's prediction at that bar)
@@ -129,7 +141,20 @@ def dump_stitched_predictions(
         "n_other": int(((out["label"] != "bull") & (out["label"] != "bear")).sum()),
         "stitched_metrics": stitched_metrics,
         "cfg_hash": _cfg_hash(cfg),
-        "schema": "[date, label, close]",
+        "schema": "[date, label, close, confidence]",
+        "confidence_stats": {
+            "min": float(out["confidence"].min()),
+            "max": float(out["confidence"].max()),
+            "mean": float(out["confidence"].mean()),
+            # Quick scan of how aggressive a filter would be: fraction of
+            # bars that would survive each threshold. Saved so we can pick
+            # `proba_threshold` without rerunning the framework.
+            "frac_above_0.5": float((out["confidence"] >= 0.5).mean()),
+            "frac_above_0.55": float((out["confidence"] >= 0.55).mean()),
+            "frac_above_0.6": float((out["confidence"] >= 0.6).mean()),
+            "frac_above_0.65": float((out["confidence"] >= 0.65).mean()),
+            "frac_above_0.7": float((out["confidence"] >= 0.7).mean()),
+        },
     }
     manifest_path = Path(manifest_path)
     manifest_path.write_text(json.dumps(manifest, indent=2, default=str))

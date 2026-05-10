@@ -221,6 +221,14 @@ class BacktestConfig:
     timerange: str | None = None            # None = derive from stitched OOS dates
     divergence_warn_pct: float = 10.0
     breakdown: str = "month"                # freqtrade --breakdown: day | week | month | year
+    # Per-bar confidence floor for trading: any bar whose predicted-class
+    # probability is below this is treated as flat (no signal). 0.0 disables
+    # the filter; 0.5 = "majority vote" for binary; 0.6-0.7 = stricter.
+    # Requires the predictor to expose predict_proba (Ensemble-Conf yes,
+    # classical with probabilities yes, RL approximators with proba head yes;
+    # bare RL or non-proba predictors collapse to conf=1 so the filter is
+    # a no-op and the strategy behaves like before this feature).
+    proba_threshold: float = 0.0
 
 
 def _parse_cross_spec(d: dict) -> CrossAssetSpec:

@@ -266,6 +266,12 @@ def backtest(
         help="Slice the loaded OHLCV to YYYYMMDD-YYYYMMDD before CV. Use to "
              "test the framework on a specific historical period (e.g. bull).",
     ),
+    proba_threshold: float = typer.Option(
+        -1.0, "--proba-threshold",
+        help="Per-bar confidence floor: bars with max-class proba below this "
+             "are treated as flat (no signal). 0.0 disables. -1 = use "
+             "cfg.backtest.proba_threshold (YAML).",
+    ),
 ):
     """Backtest a predictor's stitched OOS predictions in freqtrade.
 
@@ -357,6 +363,10 @@ def backtest(
 
     # Render the strategy file
     from .backtesting.strategy_template import write_strategy_file
+    # CLI flag wins over YAML; -1 sentinel means "use YAML".
+    effective_proba_threshold = (
+        proba_threshold if proba_threshold >= 0.0 else float(cfg.backtest.proba_threshold)
+    )
     class_name = f"RegimeStrategy_{cfg.target}_{cfg.timeframe}_{_safe_class_name(chosen)}"
     can_short = (cfg.market_type == "futures")
     strategy_path = write_strategy_file(
@@ -370,7 +380,25 @@ def backtest(
         quote=cfg.quote,
         settle=cfg.settle,
         market_type=cfg.market_type,
+        proba_threshold=effective_proba_threshold,
     )
+    if effective_proba_threshold > 0.0:
+        # Quick scan from manifest so the user knows roughly how many bars
+        # the filter will keep before launching freqtrade.
+        try:
+            _mf = _json.loads(manifest_path.read_text())
+            _stats = (_mf.get("confidence_stats") or {})
+            # Pick the closest pre-computed bucket; fall back to a coarse hint.
+            _buckets = [0.5, 0.55, 0.6, 0.65, 0.7]
+            _closest = min(_buckets, key=lambda x: abs(x - effective_proba_threshold))
+            _frac = _stats.get(f"frac_above_{_closest}")
+            if _frac is not None:
+                console.print(
+                    f"  [cyan]Confidence filter:[/cyan] threshold={effective_proba_threshold:.3f}, "
+                    f"~{_frac*100:.0f}% of bars survive (manifest bucket {_closest})"
+                )
+        except (FileNotFoundError, ValueError):
+            pass
     console.print(f"  [green]Strategy written:[/green] {strategy_path}")
 
     # Build + write the freqtrade config

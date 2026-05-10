@@ -653,7 +653,7 @@ class BenchmarkRunner:
         baseline_acc = float((y_te.values == y_tr.value_counts().idxmax()).mean())
         console.print(f"  Baseline (always-predict majority): acc={baseline_acc:.3f}")
 
-        results, per_predictor_predictions = self._fit_eval_loop(
+        results, per_predictor_predictions, _ = self._fit_eval_loop(
             predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te
         )
         self.results = results
@@ -724,12 +724,17 @@ class BenchmarkRunner:
         skip_fit: bool = False,
         fold_idx: int = 0,
         per_predictor_skip_fit: dict[str, bool] | None = None,
-    ) -> tuple[list[PredictionResult], dict[str, np.ndarray]]:
+    ) -> tuple[list[PredictionResult], dict[str, np.ndarray], dict[str, np.ndarray]]:
         results: list[PredictionResult] = []
         per_predictor_predictions: dict[str, np.ndarray] = {}
         # Per-base predict_proba (n_test, n_classes); fed to ensemble predictors
         # in the second pass.
         per_predictor_probas: dict[str, np.ndarray] = {}
+        # Per-bar predicted-class confidence (max class proba): consumed by
+        # `regime-run backtest` to filter weak signals via cfg.backtest.proba_threshold.
+        # Predictors without predict_proba get conf=1.0 so the downstream filter
+        # is a no-op (= "trust everything" / matches pre-feature behavior).
+        per_predictor_confidences: dict[str, np.ndarray] = {}
 
         # Two-pass: base predictors first, then ensembles (which depend on
         # base outputs). Maintain original predictor ordering otherwise.
@@ -786,12 +791,24 @@ class BenchmarkRunner:
                     pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
                     _evaluate(predictor, pred_arr, t0)
                     # Store proba for ensemble (base may return None if unsupported).
+                    # Also derive per-bar confidence (= max class proba) for the
+                    # downstream `regime-run backtest` confidence filter.
                     try:
                         proba = predictor.predict_proba(X_te, d_te, df_te)
                         if proba is not None:
-                            per_predictor_probas[predictor.name] = np.asarray(proba)
+                            proba_arr = np.asarray(proba)
+                            per_predictor_probas[predictor.name] = proba_arr
+                            if proba_arr.ndim == 2:
+                                per_predictor_confidences[predictor.name] = (
+                                    proba_arr.max(axis=1)
+                                )
                     except Exception:
                         pass
+                    # Fallback: no proba -> conf=1.0 (filter no-op).
+                    if predictor.name not in per_predictor_confidences:
+                        per_predictor_confidences[predictor.name] = np.ones(
+                            len(pred_arr), dtype=np.float64
+                        )
                 except Exception as e:
                     console.print(f"  [red]✘[/red] {predictor.name}: {e}")
                     traceback.print_exc()
@@ -815,6 +832,23 @@ class BenchmarkRunner:
                     predictor.fit(X_tr, y_tr, d_tr, df_tr)  # no-op
                     pred_arr = np.asarray(predictor.predict(X_te, d_te, df_te))
                     _evaluate(predictor, pred_arr, t0)
+                    # Ensembles can expose their own predict_proba (e.g. avg
+                    # of base probas weighted by confidence/kappa). Capture
+                    # per-bar confidence; fallback to 1.0 if not supported.
+                    try:
+                        ens_proba = predictor.predict_proba(X_te, d_te, df_te)
+                        if ens_proba is not None:
+                            ens_proba_arr = np.asarray(ens_proba)
+                            if ens_proba_arr.ndim == 2:
+                                per_predictor_confidences[predictor.name] = (
+                                    ens_proba_arr.max(axis=1)
+                                )
+                    except Exception:
+                        pass
+                    if predictor.name not in per_predictor_confidences:
+                        per_predictor_confidences[predictor.name] = np.ones(
+                            len(pred_arr), dtype=np.float64
+                        )
                     # Use the post-dedup base list (cold ensembles see cold
                     # bases only; FT ensembles see FT bases only) — not the
                     # raw runner-side dict which has both flavors.
@@ -827,7 +861,7 @@ class BenchmarkRunner:
                     console.print(f"  [red]✘[/red] {predictor.name}: {e}")
                     traceback.print_exc()
 
-        return results, per_predictor_predictions
+        return results, per_predictor_predictions, per_predictor_confidences
 
     def _run_cv(self, cfg, df, X, y, dates, purge: int) -> dict:
         n_folds = int(cfg.split.cv_folds)
@@ -1142,7 +1176,7 @@ class BenchmarkRunner:
                 for name, cadence in pred_retrain_every.items()
                 if cadence > 1  # cadence=1 means refit every fold (no override needed)
             }
-            fold_results, fold_predictions = self._fit_eval_loop(
+            fold_results, fold_predictions, fold_confidences = self._fit_eval_loop(
                 predictors, X_tr, y_tr, d_tr, df_tr, X_te, y_te, d_te, df_te,
                 skip_fit=skip_fit,
                 fold_idx=current_fold_zero_indexed,
@@ -1218,6 +1252,7 @@ class BenchmarkRunner:
                     "X_te": X_te,
                     "d_te": d_te,
                     "predictions": dict(fold_predictions),  # name -> ndarray
+                    "confidences": dict(fold_confidences),  # name -> ndarray (per-bar max class proba)
                     "fold_results": list(fold_results),
                 })
 
