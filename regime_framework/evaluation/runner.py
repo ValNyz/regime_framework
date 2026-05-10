@@ -1246,7 +1246,7 @@ class BenchmarkRunner:
             synth_gain_by_month, consistency_positive_months,
             sharpe_ratio, periods_per_year,
             synth_equity_curve, max_drawdown, profit_factor, calmar_ratio,
-            avg_excess_ratio, time_above_bh,
+            avg_excess_ratio, time_above_bh, count_trades,
         )
         stitched_consistency: dict[str, tuple[int, int]] = {}
         stitched_sharpe: dict[str, float] = {}
@@ -1256,6 +1256,7 @@ class BenchmarkRunner:
         stitched_avg_excess: dict[str, float] = {}
         stitched_time_above_bh: dict[str, float] = {}
         stitched_gain: dict[str, float] = {}
+        stitched_n_trades: dict[str, int] = {}
         if all_fold_preds:
             cost = float(cfg.predictors.evaluation_transaction_cost)
             ppy = periods_per_year(cfg.timeframe)
@@ -1313,6 +1314,13 @@ class BenchmarkRunner:
                 # opposite sign from PF / Sharpe on the same data. Use the
                 # stitched value here so all aggregate metrics agree.
                 stitched_gain[pname] = gain_concat
+                # Stitched trade count: each label transition into a non-zero
+                # position counts as one trade entry. Mirrors freqtrade's
+                # `total_trades` definition so the side-by-side report has a
+                # framework counterpart for that column.
+                stitched_n_trades[pname] = count_trades(
+                    preds_concat, long_only=stitched_long_only,
+                )
                 # Stitched Profit Factor over all OOS bars.
                 stitched_pf[pname] = profit_factor(
                     closes_concat, preds_concat,
@@ -1375,6 +1383,7 @@ class BenchmarkRunner:
                     "sharpe": stitched_sharpe.get(pname),
                     "max_dd": stitched_max_dd.get(pname),
                     "calmar": stitched_calmar.get(pname),
+                    "n_trades": stitched_n_trades.get(pname),
                 }
                 for pname in stitched_gain.keys()
             }

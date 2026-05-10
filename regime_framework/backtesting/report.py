@@ -112,7 +112,8 @@ def format_side_by_side(
         ("Sharpe",      "sharpe",       "sharpe",           _fmt_num, _fmt_num),
         ("max_drawdown","max_dd",       "max_drawdown_pct", _fmt_pct, _fmt_pct),
         ("Calmar",      "calmar",       "calmar",           _fmt_num, _fmt_num),
-        ("trades",      None,           "total_trades",     lambda v: "  --  ", lambda v: _fmt_num(v, ".0f")),
+        ("trades",      "n_trades",     "total_trades",
+            lambda v: _fmt_num(v, ".0f"), lambda v: _fmt_num(v, ".0f")),
     ]
 
     for label, fw_key, ft_key, fw_fmt, ft_fmt in rows:

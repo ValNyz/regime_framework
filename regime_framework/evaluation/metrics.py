@@ -226,6 +226,31 @@ def time_above_bh(
     return float((equity >= closes).mean())
 
 
+def count_trades(labels: np.ndarray, long_only: bool = False) -> int:
+    """Count freqtrade-style trade entries from a sequence of regime labels.
+
+    A trade is opened whenever the signed position transitions from one value
+    to another non-zero value (flat -> long, flat -> short, long -> short,
+    short -> long). Position transitions to flat (long -> flat, short -> flat)
+    close an existing trade but don't open a new one.
+
+    Same convention as freqtrade's `total_trades`: counts entries, not flips.
+    Initial position assumed flat (so the first non-flat label is one trade).
+
+    long_only: when True, "bear" labels translate to flat (no short entries
+    counted). Matches the spot-market metric path in _strategy_log_returns.
+    """
+    labels_arr = np.asarray(labels)
+    sign = np.zeros(len(labels_arr), dtype=np.int8)
+    sign[labels_arr == "bull"] = 1
+    if not long_only:
+        sign[labels_arr == "bear"] = -1
+    # Implicit flat at t=-1: prepend 0 to detect a fresh entry on the first bar.
+    prev = np.concatenate(([0], sign[:-1]))
+    new_entry = (sign != prev) & (sign != 0)
+    return int(new_entry.sum())
+
+
 def calmar_ratio(total_gain: float, max_dd: float) -> float:
     """Calmar = total_gain / |max_dd|. Risk-adjusted return per unit of pain.
 
