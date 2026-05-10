@@ -81,19 +81,29 @@ def build_freqtrade_config(
             "name": exchange_name,
             "key": "",
             "secret": "",
-            "ccxt_config": {},
+            # Binance futures requires defaultType=future for ccxt to hit the
+            # right endpoints. Hyperliquid auto-resolves to "swap". Other
+            # venues fall through to ccxt's defaults.
+            "ccxt_config": (
+                {"options": {"defaultType": "future"}}
+                if exchange_name == "binance" and cfg.market_type == "futures"
+                else {}
+            ),
             "ccxt_async_config": {},
             "pair_whitelist": [pair],
             "pair_blacklist": [],
         },
+        # use_order_book=True satisfies freqtrade's startup validator for
+        # Binance ("Ticker pricing not available") even though backtest only
+        # uses bar OHLCV. order_book_top=1 = mid of best bid/ask.
         "entry_pricing": {
             "price_side": "same",
-            "use_order_book": False,
+            "use_order_book": True,
             "order_book_top": 1,
         },
         "exit_pricing": {
             "price_side": "same",
-            "use_order_book": False,
+            "use_order_book": True,
             "order_book_top": 1,
         },
         "pairlists": [{"method": "StaticPairList"}],
