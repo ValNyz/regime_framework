@@ -93,16 +93,18 @@ def build_freqtrade_config(
             "pair_whitelist": [pair],
             "pair_blacklist": [],
         },
-        # use_order_book=True satisfies freqtrade's startup validator for
-        # Binance ("Ticker pricing not available") even though backtest only
-        # uses bar OHLCV. order_book_top=1 = mid of best bid/ask.
+        # Market orders take liquidity from the OPPOSITE side of the book,
+        # so freqtrade enforces price_side="other" when order_types are
+        # market (and would enforce "same" if they were limit). Mismatch
+        # -> "Market entry orders require entry_pricing.price_side='other'".
+        # use_order_book=True still satisfies the Binance startup validator.
         "entry_pricing": {
-            "price_side": "same",
+            "price_side": "other",
             "use_order_book": True,
             "order_book_top": 1,
         },
         "exit_pricing": {
-            "price_side": "same",
+            "price_side": "other",
             "use_order_book": True,
             "order_book_top": 1,
         },
