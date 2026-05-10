@@ -274,18 +274,19 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
         """Normalize freqtrade percentages to fractions (e.g. 168.25 -> 1.6825).
 
         Freqtrade is inconsistent across versions: some fields store
-        percentages (168.25 means 168.25%), others store fractions (0.0899
-        means 8.99%). We compare to the framework's stitched metrics, which
-        are uniformly stored as fractions, so we coerce.
+        percentages (168.25 means 168.25%), others store fractions (1.6825
+        means same thing, or 0.0899 means 8.99%). The framework's stitched
+        metrics are uniformly fractions.
 
-        Heuristic: |v| > 1 -> percent units -> divide by 100. |v| <= 1 ->
-        already a fraction. False positives only happen for absurdly large
-        fractional gains (>100%) — but those would print weirdly anyway.
+        Heuristic: |v| > 5 -> very likely percent units -> divide by 100.
+        |v| <= 5 -> assume already a fraction (covers fractional gains up
+        to +500%, drawdowns up to -500%, Sharpes up to ±5 — anything past
+        that is suspect either way).
         """
         if v is None:
             return None
         v = float(v)
-        return v / 100.0 if abs(v) > 1.0 else v
+        return v / 100.0 if abs(v) > 5.0 else v
 
     # Periodic breakdown — present when `--breakdown <unit>` was passed.
     # Freqtrade stores it as `periodic_breakdown` (newer) or
