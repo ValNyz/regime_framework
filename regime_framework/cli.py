@@ -397,7 +397,7 @@ def backtest(
     # span (= silent loss of most trades). The feather can't lie — if a label
     # row exists at date X, X belongs in the OOS span.
     if not timerange:
-        timerange = cfg.backtest.timerange
+        timerange = cfg.backtest.timerange or ""
     if not timerange:
         import pandas as _pd
         _feather = _pd.read_feather(pred_path)
