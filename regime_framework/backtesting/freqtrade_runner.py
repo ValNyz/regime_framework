@@ -97,6 +97,21 @@ def build_freqtrade_config(
             "order_book_top": 1,
         },
         "pairlists": [{"method": "StaticPairList"}],
+        # api_server is REQUIRED by `freqtrade webserver` even when disabled
+        # for live trading. Default minimal stanza — the webserver UI will
+        # listen on 127.0.0.1:8080 with these credentials.
+        "api_server": {
+            "enabled": False,
+            "listen_ip_address": "127.0.0.1",
+            "listen_port": 8080,
+            "verbosity": "error",
+            "enable_openapi": False,
+            "jwt_secret_key": "regime-run-replace-me",
+            "ws_token": "regime-run-ws-replace-me",
+            "CORS_origins": [],
+            "username": "freqtrade",
+            "password": "regime_run",
+        },
         # tag: written by regime_framework; helpful to audit which run produced this
         "regime_framework_predictor": predictor_name,
     }
