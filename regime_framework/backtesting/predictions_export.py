@@ -142,6 +142,11 @@ def dump_stitched_predictions(
         "stitched_metrics": stitched_metrics,
         "cfg_hash": _cfg_hash(cfg),
         "schema": "[date, label, close, confidence]",
+        # Threshold value used to compute `stitched_metrics`. Used by the
+        # backtest CLI to flag mismatches between manifest metrics and the
+        # CLI-overridden threshold — if they differ, the side-by-side
+        # framework column is stale relative to the freqtrade run.
+        "proba_threshold_used": float(getattr(cfg.backtest, "proba_threshold", 0.0) or 0.0),
         "confidence_stats": {
             "min": float(out["confidence"].min()),
             "max": float(out["confidence"].max()),

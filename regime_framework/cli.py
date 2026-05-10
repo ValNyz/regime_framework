@@ -388,7 +388,6 @@ def backtest(
         try:
             _mf = _json.loads(manifest_path.read_text())
             _stats = (_mf.get("confidence_stats") or {})
-            # Pick the closest pre-computed bucket; fall back to a coarse hint.
             _buckets = [0.5, 0.55, 0.6, 0.65, 0.7]
             _closest = min(_buckets, key=lambda x: abs(x - effective_proba_threshold))
             _frac = _stats.get(f"frac_above_{_closest}")
@@ -396,6 +395,20 @@ def backtest(
                 console.print(
                     f"  [cyan]Confidence filter:[/cyan] threshold={effective_proba_threshold:.3f}, "
                     f"~{_frac*100:.0f}% of bars survive (manifest bucket {_closest})"
+                )
+            # Flag stale framework metrics: stitched_metrics in the manifest
+            # were computed at proba_threshold_used. If the CLI overrides
+            # that to a different value, the side-by-side framework column
+            # is no longer comparable to the freqtrade run.
+            _used = float(_mf.get("proba_threshold_used", 0.0) or 0.0)
+            if abs(_used - effective_proba_threshold) > 1e-6:
+                console.print(
+                    f"  [yellow]WARN[/yellow] framework stitched_metrics were "
+                    f"computed at proba_threshold={_used:.3f}, but freqtrade will "
+                    f"use {effective_proba_threshold:.3f}. The side-by-side "
+                    f"comparison will diverge for this reason alone — pass "
+                    f"--force-rebuild to recompute framework metrics at the "
+                    f"new threshold."
                 )
         except (FileNotFoundError, ValueError):
             pass
