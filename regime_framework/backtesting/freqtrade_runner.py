@@ -323,17 +323,36 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
     if max_dd is not None and max_dd > 0:
         max_dd = -max_dd
 
-    # Calmar: prefer freqtrade's own field; fall back to gain / |dd| (matches
-    # the framework's calmar_ratio() convention — non-annualized).
-    calmar = _get("calmar", "calmar_ratio")
-    if calmar is None and profit_total_pct is not None and max_dd not in (None, 0):
+    # Calmar: ALWAYS recompute as gain / |dd| (matches the framework's
+    # calmar_ratio() convention — non-annualized). Freqtrade's own `calmar`
+    # field is annualized via CAGR / max_dd which produces wildly different
+    # numbers on short backtests (e.g. 146 vs framework's 14 on the same
+    # series). For an apples-to-apples side-by-side, recompute.
+    if profit_total_pct is not None and max_dd not in (None, 0):
         calmar = profit_total_pct / abs(max_dd)
+    else:
+        calmar = None
+
+    # Sharpe / Sortino: freqtrade exposes TWO families of these:
+    #   - closed-trades-based: annualized from per-trade returns
+    #   - daily-wallet-balance: from daily balance time series (= what the
+    #     framework computes, just at daily resolution instead of per-bar)
+    # Prefer the wallet-balance variants for an apples-to-apples comparison
+    # with the framework's stitched Sharpe.
+    sharpe = _get(
+        "sharpe_daily", "wallet_sharpe", "sharpe_wallet",
+        "sharpe", "sharpe_ratio",
+    )
+    sortino = _get(
+        "sortino_daily", "wallet_sortino", "sortino_wallet",
+        "sortino", "sortino_ratio",
+    )
 
     return {
         "profit_total": _get("profit_total_abs", "profit_abs"),  # absolute USDC
         "profit_total_pct": profit_total_pct,                     # fraction
-        "sharpe": _get("sharpe", "sharpe_ratio"),
-        "sortino": _get("sortino", "sortino_ratio"),
+        "sharpe": sharpe,
+        "sortino": sortino,
         "calmar": calmar,
         "cagr": _get("cagr"),
         "max_drawdown_pct": max_dd,                                # fraction, negative

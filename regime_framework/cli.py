@@ -384,6 +384,19 @@ def backtest(
 
     # Side-by-side report (framework stitched OOS vs freqtrade)
     fw_metrics = _json.loads(manifest_path.read_text()).get("stitched_metrics") or {}
+    # Backfill n_trades from the predictions feather when the manifest pre-dates
+    # the count_trades commit. Cheap (single np.diff over <10k rows).
+    if fw_metrics.get("n_trades") is None and pred_path.exists():
+        try:
+            import pandas as _pd
+            from .evaluation.metrics import count_trades as _count_trades
+            _df = _pd.read_feather(pred_path)
+            fw_metrics["n_trades"] = _count_trades(
+                _df["label"].to_numpy(),
+                long_only=(cfg.market_type == "spot"),
+            )
+        except Exception:
+            pass
     from .backtesting.report import format_side_by_side, format_breakdown
     table = format_side_by_side(fw_metrics, ft_metrics, cfg.backtest.divergence_warn_pct)
     console.print(table)
@@ -392,6 +405,7 @@ def backtest(
     breakdown_table = format_breakdown(
         ft_metrics.get("periodic_breakdown") or {},
         unit=cfg.backtest.breakdown,
+        starting_balance=ft_metrics.get("starting_balance") or cfg.backtest.dry_run_wallet,
     )
     if breakdown_table is not None:
         console.print(breakdown_table)

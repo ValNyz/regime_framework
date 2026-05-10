@@ -14,13 +14,20 @@ from __future__ import annotations
 from rich.table import Table
 
 
-def format_breakdown(breakdown: dict, unit: str = "month") -> Table | None:
+def format_breakdown(
+    breakdown: dict,
+    unit: str = "month",
+    starting_balance: float | None = None,
+) -> Table | None:
     """Build a 4-column rich.Table of per-period freqtrade results.
 
     `breakdown` shape (freqtrade 2026): either a dict {unit: list[dict]}
     where each dict has keys like {date, profit_abs, profit_pct,
     wins, draws, loses}, or directly a list[dict] when only one unit was
     requested. We try both and degrade gracefully on schema variants.
+
+    `starting_balance` lets us compute profit % from profit_abs when freqtrade
+    doesn't expose a per-period percentage (which is the common case).
     """
     if not breakdown:
         return None
@@ -53,8 +60,16 @@ def format_breakdown(breakdown: dict, unit: str = "month") -> Table | None:
 
     for row in rows:
         date = str(row.get("date") or row.get("period") or "?")[:10]
-        prof_abs = row.get("profit_abs") or row.get("rel_profit") or row.get("profit")
-        prof_pct = row.get("profit_pct") or row.get("profit_total_pct") or row.get("profit_percentage")
+        prof_abs = row.get("profit_abs") or row.get("profit")
+        prof_pct = (
+            row.get("rel_profit")            # freqtrade 2026: per-period fraction
+            or row.get("profit_pct")
+            or row.get("profit_total_pct")
+            or row.get("profit_percentage")
+        )
+        # Fallback: derive % from absolute profit and the run's starting balance.
+        if prof_pct is None and prof_abs is not None and starting_balance:
+            prof_pct = float(prof_abs) / float(starting_balance)
         trades = row.get("trade_count") or row.get("trades") or row.get("total_trades")
         wins = row.get("wins")
         draws = row.get("draws")
@@ -63,7 +78,14 @@ def format_breakdown(breakdown: dict, unit: str = "month") -> Table | None:
             str(int(x)) if x is not None else "?" for x in (wins, draws, loses)
         )
         prof_abs_str = f"{float(prof_abs):+8.2f}" if prof_abs is not None else "    --  "
-        prof_pct_str = f"{float(prof_pct) * 100:+6.2f}%" if prof_pct is not None else "  --  "
+        if prof_pct is None:
+            prof_pct_str = "  --  "
+        else:
+            v = float(prof_pct)
+            # Normalize: |v|>5 means percent units, divide by 100 first.
+            if abs(v) > 5:
+                v = v / 100.0
+            prof_pct_str = f"{v * 100:+6.2f}%"
         trades_str = str(int(trades)) if trades is not None else "--"
         table.add_row(date, prof_abs_str, prof_pct_str, trades_str, wdl)
 
