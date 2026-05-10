@@ -353,14 +353,38 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
     #   - daily-wallet-balance: from daily balance time series (= what the
     #     framework computes, just at daily resolution instead of per-bar)
     # Prefer the wallet-balance variants for an apples-to-apples comparison
-    # with the framework's stitched Sharpe.
-    sharpe = _get(
-        "sharpe_daily", "wallet_sharpe", "sharpe_wallet",
+    # with the framework's stitched Sharpe. Freqtrade 2026.x stores the
+    # wallet metrics under several possible nesting patterns — we try the
+    # nested `wallet_*` block first, then various flat-key aliases.
+    wallet_block = strat.get("wallet_metrics") or strat.get("wallet_based_metrics") or {}
+
+    def _wallet_or_top(*top_keys, **wallet_keys):
+        # 1. nested under wallet_metrics
+        for k in wallet_keys.get("nested", ()):
+            v = wallet_block.get(k)
+            if v is not None:
+                return v
+        # 2. wallet-prefixed flat keys (freqtrade 2026 ships several variants)
+        for k in wallet_keys.get("flat", ()):
+            v = strat.get(k)
+            if v is not None:
+                return v
+        # 3. fall back to closed-trades top-level
+        for k in top_keys:
+            v = strat.get(k)
+            if v is not None:
+                return v
+        return None
+
+    sharpe = _wallet_or_top(
         "sharpe", "sharpe_ratio",
+        nested=("sharpe", "sharpe_ratio"),
+        flat=("sharpe_daily", "sharpe_wallet", "wallet_sharpe", "daily_wallet_sharpe"),
     )
-    sortino = _get(
-        "sortino_daily", "wallet_sortino", "sortino_wallet",
+    sortino = _wallet_or_top(
         "sortino", "sortino_ratio",
+        nested=("sortino", "sortino_ratio"),
+        flat=("sortino_daily", "sortino_wallet", "wallet_sortino", "daily_wallet_sortino"),
     )
 
     return {
