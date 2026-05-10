@@ -48,6 +48,20 @@ class ${CLASS_NAME}(IStrategy):
     use_exit_signal = True
     startup_candle_count = 0
 
+    # CRITICAL: market orders, not limit. Default freqtrade order_types use
+    # `limit` which in backtest only fills if the next bar's range crosses
+    # the signal price. In trending markets (e.g. BTC down-trend with bear
+    # signals), the limit price sits on the wrong side of the orderbook so
+    # the order never fills -> trade silently dropped. Market = guaranteed
+    # fill at next bar's open, which is the only realistic execution model
+    # given the backtest only has OHLCV (no real orderbook).
+    order_types = {
+        "entry": "market",
+        "exit": "market",
+        "stoploss": "market",
+        "stoploss_on_exchange": False,
+    }
+
     _PRED_PATH = Path(r"${PREDICTIONS_PATH}")
     _preds_cache = None
 

@@ -106,6 +106,17 @@ def build_freqtrade_config(
             "use_order_book": True,
             "order_book_top": 1,
         },
+        # Market orders: guaranteed fill at next bar open. Limit orders in
+        # backtest silently get dropped when next bar doesn't cross the
+        # signal price (= most of the time in trending markets) -> only a
+        # fraction of regime signals translate into actual trades.
+        "order_types": {
+            "entry": "market",
+            "exit": "market",
+            "stoploss": "market",
+            "stoploss_on_exchange": False,
+            "stoploss_on_exchange_interval": 60,
+        },
         "pairlists": [{"method": "StaticPairList"}],
         # api_server is REQUIRED by `freqtrade webserver` even when disabled
         # for live trading. Default minimal stanza — the webserver UI will
