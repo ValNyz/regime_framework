@@ -111,7 +111,7 @@ def format_side_by_side(
         ("gain_total",  "gain",         "profit_total_pct", _fmt_pct, _fmt_pct),
         ("Sharpe",      "sharpe",       "sharpe",           _fmt_num, _fmt_num),
         ("max_drawdown","max_dd",       "max_drawdown_pct", _fmt_pct, _fmt_pct),
-        ("Calmar",      "calmar",       None,               _fmt_num, lambda v: "  --  "),
+        ("Calmar",      "calmar",       "calmar",           _fmt_num, _fmt_num),
         ("trades",      None,           "total_trades",     lambda v: "  --  ", lambda v: _fmt_num(v, ".0f")),
     ]
 

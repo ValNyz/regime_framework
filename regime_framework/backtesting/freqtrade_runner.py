@@ -152,7 +152,10 @@ def run_backtest(
         "--datadir", str(Path(datadir).resolve()),
         "--timerange", timerange,
         "--export", "trades",
-        "--export-filename", str(Path(export_path).resolve()),
+        # Note: --export-filename is deprecated since freqtrade 2026.x; the
+        # backtest result lands under <user_data_dir>/backtest_results/ with
+        # a timestamped name, then resolved by parse_backtest_result via
+        # .last_result.json (see _find_freqtrade_result fallback chain).
     ]
     if breakdown:
         cmd += ["--breakdown", breakdown]
@@ -267,6 +270,23 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
                 return v
         return default
 
+    def _to_fraction(v):
+        """Normalize freqtrade percentages to fractions (e.g. 168.25 -> 1.6825).
+
+        Freqtrade is inconsistent across versions: some fields store
+        percentages (168.25 means 168.25%), others store fractions (0.0899
+        means 8.99%). We compare to the framework's stitched metrics, which
+        are uniformly stored as fractions, so we coerce.
+
+        Heuristic: |v| > 1 -> percent units -> divide by 100. |v| <= 1 ->
+        already a fraction. False positives only happen for absurdly large
+        fractional gains (>100%) — but those would print weirdly anyway.
+        """
+        if v is None:
+            return None
+        v = float(v)
+        return v / 100.0 if abs(v) > 1.0 else v
+
     # Periodic breakdown — present when `--breakdown <unit>` was passed.
     # Freqtrade stores it as `periodic_breakdown` (newer) or
     # `daily_profit` / `weekly_profit` / `monthly_profit` (older).
@@ -279,17 +299,44 @@ def parse_backtest_result(export_path: Path, strategy_class: str) -> dict[str, A
         }
         breakdown = {k: v for k, v in breakdown.items() if v}
 
+    # Profit total: try several aliases. Freqtrade 2026 typically stores
+    # the percentage version as `profit_total` (already a fraction) or
+    # `profit_total_pct` (already a fraction in newer schema).
+    profit_total_pct = _to_fraction(_get(
+        "profit_total",            # often the fraction in 2026.x
+        "profit_total_pct",
+        "profit_total_percentage",
+        "profit_total_long_pct",
+        "total_profit_pct",
+    ))
+
+    # Drawdown: framework's convention is NEGATIVE (e.g. -0.1354). Freqtrade
+    # often reports as POSITIVE magnitude (8.99%). We force negative sign.
+    max_dd_raw = _get(
+        "max_drawdown_account",
+        "max_drawdown",
+        "max_relative_drawdown",
+        "max_drawdown_abs",
+    )
+    max_dd = _to_fraction(max_dd_raw)
+    if max_dd is not None and max_dd > 0:
+        max_dd = -max_dd
+
+    # Calmar: prefer freqtrade's own field; fall back to gain / |dd| (matches
+    # the framework's calmar_ratio() convention — non-annualized).
+    calmar = _get("calmar", "calmar_ratio")
+    if calmar is None and profit_total_pct is not None and max_dd not in (None, 0):
+        calmar = profit_total_pct / abs(max_dd)
+
     return {
-        "profit_total": _get("profit_total"),
-        "profit_total_pct": _get("profit_total_pct", "profit_total_percentage"),
+        "profit_total": _get("profit_total_abs", "profit_abs"),  # absolute USDC
+        "profit_total_pct": profit_total_pct,                     # fraction
         "sharpe": _get("sharpe", "sharpe_ratio"),
         "sortino": _get("sortino", "sortino_ratio"),
-        "max_drawdown_pct": _get(
-            "max_drawdown_account",
-            "max_drawdown",
-            "max_relative_drawdown",
-        ),
-        "total_trades": _get("total_trades", "trade_count"),
+        "calmar": calmar,
+        "cagr": _get("cagr"),
+        "max_drawdown_pct": max_dd,                                # fraction, negative
+        "total_trades": _get("total_trades", "trade_count", "trades"),
         "expectancy": _get("expectancy"),
         "starting_balance": _get("starting_balance"),
         "final_balance": _get("final_balance"),
