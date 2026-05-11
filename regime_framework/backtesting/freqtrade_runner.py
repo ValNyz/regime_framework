@@ -47,6 +47,74 @@ def derive_stake_currency(cfg) -> str:
     return cfg.settle if cfg.market_type == "futures" else cfg.quote
 
 
+# Heuristic min-contract precision per coin (BTC=0.001, ETH=0.01, …).
+# Most major futures exchanges use these. Used by the wallet-too-small
+# pre-flight check so we don't waste a backtest on silent-truncation runs.
+_CONTRACT_PRECISION_GUESS = {
+    "BTC": 0.001, "ETH": 0.01, "BNB": 0.01, "SOL": 1.0,
+    "XRP": 1.0, "DOGE": 1.0, "ADA": 1.0, "MATIC": 1.0,
+}
+
+
+def _warn_if_wallet_too_small(cfg, datadir: Path) -> None:
+    """Emit a console warning when dry_run_wallet is small enough that
+    freqtrade will silently truncate contracts to zero and drop the trade.
+
+    Root cause: freqtrade's _enter_trade computes amount = stake/price, then
+    rounds DOWN to the exchange's contract precision. If the rounded amount
+    is 0, _enter_trade returns silently — no log line, no entry in
+    "Rejected Entry signals". The trade just disappears.
+
+    Concrete example that bit us: dry_run_wallet=100 USDT on Binance BTC
+    futures (precision 0.001 BTC). At BTC=$115K, stake/price = 0.00087 →
+    truncated to 0 → all Aug-Oct trades dropped while BTC was above $100K.
+
+    Heuristic: warn when dry_run_wallet × tradable_balance_ratio is less
+    than 5× the contract notional implied by the last close price.
+    """
+    target = (cfg.target or "").upper()
+    precision = _CONTRACT_PRECISION_GUESS.get(target)
+    if precision is None:
+        return
+    # Find the OHLCV feather (futures or spot) and read the last close.
+    if cfg.market_type == "futures":
+        ohlcv_path = Path(datadir) / "futures" / (
+            f"{cfg.target}_{cfg.quote}_{cfg.settle}-{cfg.timeframe}-futures.feather"
+        )
+    else:
+        ohlcv_path = Path(datadir) / f"{cfg.target}_{cfg.quote}-{cfg.timeframe}.feather"
+    if not ohlcv_path.exists():
+        return
+    try:
+        import pandas as pd
+        df = pd.read_feather(ohlcv_path)
+        if df.empty or "close" not in df.columns:
+            return
+        last_close = float(df["close"].iloc[-1])
+    except Exception:
+        return
+    effective_stake = (
+        float(cfg.backtest.dry_run_wallet) * 0.99 / max(int(cfg.backtest.max_open_trades), 1)
+    )
+    min_notional = last_close * precision
+    if effective_stake < min_notional * 5:
+        # Use rich console if available, fall back to print
+        msg = (
+            f"WARN dry_run_wallet={cfg.backtest.dry_run_wallet:.0f} {derive_stake_currency(cfg)} "
+            f"is small vs {cfg.target} price (~{last_close:,.0f}). "
+            f"Min contract notional ≈ {min_notional:.2f} {derive_stake_currency(cfg)} "
+            f"(precision {precision}); your effective stake is {effective_stake:.2f}. "
+            f"Freqtrade SILENTLY drops trades when stake/price truncates to 0 "
+            f"contracts -- you may see far fewer trades than expected. "
+            f"Recommend: dry_run_wallet >= {min_notional * 10:.0f} {derive_stake_currency(cfg)}."
+        )
+        try:
+            from rich.console import Console
+            Console().print(f"  [yellow]{msg}[/yellow]")
+        except Exception:
+            print(f"  {msg}")
+
+
 def build_freqtrade_config(
     cfg,
     *,
@@ -140,6 +208,7 @@ def build_freqtrade_config(
     }
     if cfg.market_type == "futures":
         config["margin_mode"] = "isolated"
+    _warn_if_wallet_too_small(cfg, datadir)
     return config
 
 

@@ -217,7 +217,13 @@ class BacktestConfig:
     stake_currency: str | None = None       # None = derive from settle
     pair: str | None = None                 # None = derive from (target, quote, settle, market_type)
     max_open_trades: int = 1
-    dry_run_wallet: float = 100.0
+    # 1000 (not 100) because freqtrade SILENTLY drops trades when
+    # stake/price truncates to 0 after contract precision (e.g. 100 USDT
+    # on Binance BTC futures at $115K → 0.00087 BTC → rounds to 0). At
+    # 1000 USDT the safety margin is 10× minimum contract size for BTC,
+    # which is enough for normal price levels. See `_warn_if_wallet_too_small`
+    # in freqtrade_runner for the runtime check.
+    dry_run_wallet: float = 1000.0
     timerange: str | None = None            # None = derive from stitched OOS dates
     divergence_warn_pct: float = 10.0
     breakdown: str = "month"                # freqtrade --breakdown: day | week | month | year
