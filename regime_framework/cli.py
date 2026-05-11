@@ -353,6 +353,43 @@ def backtest(
             f"  [green]Stitched predictions dumped:[/green] {pred_path} "
             f"({n_unique} bars, {oos_first} → {oos_last})"
         )
+        # Also dump every OTHER predictor that produced predictions, so the
+        # user can iterate over `--predictor X` without re-running the
+        # framework. Each gets its own feather + manifest keyed by name.
+        all_pred_names: set[str] = set()
+        for fp in all_fold_preds_by_mode[mode]:
+            all_pred_names.update(fp.get("predictions", {}).keys())
+        also_dumped: list[str] = []
+        also_failed: list[tuple[str, str]] = []
+        for other_name in sorted(all_pred_names):
+            if other_name == chosen:
+                continue
+            other_pred_path = strategies_dir / (
+                f"regime_pred_{cfg.target}_{cfg.timeframe}_{other_name}.feather"
+            )
+            other_manifest_path = other_pred_path.with_suffix(".json")
+            try:
+                dump_stitched_predictions(
+                    all_fold_preds=all_fold_preds_by_mode[mode],
+                    df=runner.df,
+                    predictor_name=other_name,
+                    out_path=other_pred_path,
+                    manifest_path=other_manifest_path,
+                    stitched_metrics=stitched_metrics_by_mode.get(mode, {}).get(other_name, {}),
+                    cfg=cfg,
+                )
+                also_dumped.append(other_name)
+            except Exception as e:
+                also_failed.append((other_name, str(e)))
+        if also_dumped:
+            console.print(
+                f"  [green]Also dumped[/green] {len(also_dumped)} other predictor feather(s) "
+                f"in {strategies_dir} — switch via [cyan]--predictor X[/cyan] without --force-rebuild."
+            )
+            console.print(f"    [dim]{', '.join(also_dumped)}[/dim]")
+        if also_failed:
+            for name, err in also_failed:
+                console.print(f"  [yellow]⊘[/yellow] skipped {name}: {err}")
     else:
         manifest = _json.loads(manifest_path.read_text())
         chosen = predictor or manifest.get("predictor")
